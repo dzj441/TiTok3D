@@ -87,7 +87,7 @@ def sample_fn(generator,
         randomize_temperature=randomize_temperature,
         softmax_temperature_annealing=softmax_temperature_annealing,
         num_sample_steps=num_sample_steps)
-    
+
     generated_image = tokenizer.decode_tokens(
         generated_tokens.view(generated_tokens.shape[0], -1)
     )

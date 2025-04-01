@@ -355,91 +355,91 @@ class ReconstructionLoss_Single_Stage(ReconstructionLoss_Stage2):
 
 
 
-class MLMLoss(torch.nn.Module):
-    def __init__(self,
-                 config):
-        super().__init__()
-        self.label_smoothing = config.losses.label_smoothing
-        self.loss_weight_unmasked_token = config.losses.loss_weight_unmasked_token
-        self.criterion = torch.nn.CrossEntropyLoss(label_smoothing=self.label_smoothing,
-                                                   reduction="none")
+# class MLMLoss(torch.nn.Module):
+#     def __init__(self,
+#                  config):
+#         super().__init__()
+#         self.label_smoothing = config.losses.label_smoothing
+#         self.loss_weight_unmasked_token = config.losses.loss_weight_unmasked_token
+#         self.criterion = torch.nn.CrossEntropyLoss(label_smoothing=self.label_smoothing,
+#                                                    reduction="none")
     
-    def forward(self, inputs: torch.Tensor, targets: torch.Tensor,
-                weights=None) -> Tuple[torch.Tensor, Mapping[Text, torch.Tensor]]:
-        inputs = rearrange(inputs, "b n c -> b c n")
-        loss = self.criterion(inputs, targets)
-        weights = weights.to(loss)
-        loss_weights = (1.0 - weights) * self.loss_weight_unmasked_token + weights # set 0 to self.loss_weight_unasked_token
-        loss = (loss * loss_weights).sum() / (loss_weights.sum() + 1e-8)
-        # we only compute correct tokens on masked tokens
-        correct_tokens = ((torch.argmax(inputs, dim=1) == targets) * weights).sum(dim=1) / (weights.sum(1) + 1e-8)
-        return loss, {"loss": loss, "correct_tokens": correct_tokens.mean()}
-    
-
-class ARLoss(torch.nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.target_vocab_size = config.model.vq_model.codebook_size
-        self.criterion = torch.nn.CrossEntropyLoss(reduction="mean")
-    
-    def forward(self, logits: torch.Tensor, labels: torch.Tensor) -> Tuple[torch.Tensor, Mapping[Text, torch.Tensor]]:
-        shift_logits = logits[..., :-1, :].permute(0, 2, 1).contiguous() # NLC->NCL
-        shift_labels = labels.contiguous()
-        shift_logits = shift_logits.view(shift_logits.shape[0], self.target_vocab_size, -1)
-        shift_labels = shift_labels.view(shift_labels.shape[0], -1)
-        shift_labels = shift_labels.to(shift_logits.device)
-        loss = self.criterion(shift_logits, shift_labels)
-        correct_tokens = (torch.argmax(shift_logits, dim=1) == shift_labels).sum(dim=1) / shift_labels.size(1)
-        return loss, {"loss": loss, "correct_tokens": correct_tokens.mean()}
+#     def forward(self, inputs: torch.Tensor, targets: torch.Tensor,
+#                 weights=None) -> Tuple[torch.Tensor, Mapping[Text, torch.Tensor]]:
+#         inputs = rearrange(inputs, "b n c -> b c n")
+#         loss = self.criterion(inputs, targets)
+#         weights = weights.to(loss)
+#         loss_weights = (1.0 - weights) * self.loss_weight_unmasked_token + weights # set 0 to self.loss_weight_unasked_token
+#         loss = (loss * loss_weights).sum() / (loss_weights.sum() + 1e-8)
+#         # we only compute correct tokens on masked tokens
+#         correct_tokens = ((torch.argmax(inputs, dim=1) == targets) * weights).sum(dim=1) / (weights.sum(1) + 1e-8)
+#         return loss, {"loss": loss, "correct_tokens": correct_tokens.mean()}
     
 
-class DiffLoss(nn.Module):
-    """Diffusion Loss"""
-    def __init__(self, config):
-        super(DiffLoss, self).__init__()
-        self.in_channels = config.model.vq_model.token_size
+# class ARLoss(torch.nn.Module):
+#     def __init__(self, config):
+#         super().__init__()
+#         self.target_vocab_size = config.model.vq_model.codebook_size
+#         self.criterion = torch.nn.CrossEntropyLoss(reduction="mean")
+    
+#     def forward(self, logits: torch.Tensor, labels: torch.Tensor) -> Tuple[torch.Tensor, Mapping[Text, torch.Tensor]]:
+#         shift_logits = logits[..., :-1, :].permute(0, 2, 1).contiguous() # NLC->NCL
+#         shift_labels = labels.contiguous()
+#         shift_logits = shift_logits.view(shift_logits.shape[0], self.target_vocab_size, -1)
+#         shift_labels = shift_labels.view(shift_labels.shape[0], -1)
+#         shift_labels = shift_labels.to(shift_logits.device)
+#         loss = self.criterion(shift_logits, shift_labels)
+#         correct_tokens = (torch.argmax(shift_logits, dim=1) == shift_labels).sum(dim=1) / shift_labels.size(1)
+#         return loss, {"loss": loss, "correct_tokens": correct_tokens.mean()}
+    
 
-        self.net = SimpleMLPAdaLN(
-            in_channels=self.in_channels,
-            model_channels=config.losses.diffloss_w,
-            out_channels=self.in_channels * 2,  # for vlb loss
-            z_channels=config.model.maskgen.decoder_embed_dim,
-            num_res_blocks=config.losses.diffloss_d,
-            grad_checkpointing=config.get("training.grad_checkpointing", False),
-        )
+# class DiffLoss(nn.Module):
+#     """Diffusion Loss"""
+#     def __init__(self, config):
+#         super(DiffLoss, self).__init__()
+#         self.in_channels = config.model.vq_model.token_size
 
-        self.train_diffusion = create_diffusion(timestep_respacing="", noise_schedule="cosine")
-        self.gen_diffusion = create_diffusion(timestep_respacing=config.losses.get("num_sampling_steps", "100"), noise_schedule="cosine")
+#         self.net = SimpleMLPAdaLN(
+#             in_channels=self.in_channels,
+#             model_channels=config.losses.diffloss_w,
+#             out_channels=self.in_channels * 2,  # for vlb loss
+#             z_channels=config.model.maskgen.decoder_embed_dim,
+#             num_res_blocks=config.losses.diffloss_d,
+#             grad_checkpointing=config.get("training.grad_checkpointing", False),
+#         )
 
-    def forward(self, target, z, mask=None):
-        t = torch.randint(0, self.train_diffusion.num_timesteps, (target.shape[0],), device=target.device)
-        model_kwargs = dict(c=z)
-        loss_dict = self.train_diffusion.training_losses(self.net, target, t, model_kwargs)
-        loss = loss_dict["loss"]
-        if mask is not None:
-            loss = (loss * mask).sum() / mask.sum()
+#         self.train_diffusion = create_diffusion(timestep_respacing="", noise_schedule="cosine")
+#         self.gen_diffusion = create_diffusion(timestep_respacing=config.losses.get("num_sampling_steps", "100"), noise_schedule="cosine")
 
-        loss_dict = dict(
-            diff_loss=loss.clone().mean().detach(),
-        )
+#     def forward(self, target, z, mask=None):
+#         t = torch.randint(0, self.train_diffusion.num_timesteps, (target.shape[0],), device=target.device)
+#         model_kwargs = dict(c=z)
+#         loss_dict = self.train_diffusion.training_losses(self.net, target, t, model_kwargs)
+#         loss = loss_dict["loss"]
+#         if mask is not None:
+#             loss = (loss * mask).sum() / mask.sum()
 
-        return loss.mean(), loss_dict
+#         loss_dict = dict(
+#             diff_loss=loss.clone().mean().detach(),
+#         )
 
-    def sample(self, z, temperature=1.0, cfg=1.0):
-        # diffusion loss sampling
-        if not cfg == 1.0:
-            noise = torch.randn(z.shape[0] // 2, self.in_channels).cuda()
-            noise = torch.cat([noise, noise], dim=0)
-            model_kwargs = dict(c=z, cfg_scale=cfg)
-            sample_fn = self.net.forward_with_cfg
-        else:
-            noise = torch.randn(z.shape[0], self.in_channels).cuda()
-            model_kwargs = dict(c=z)
-            sample_fn = self.net.forward
+#         return loss.mean(), loss_dict
 
-        sampled_token_latent = self.gen_diffusion.p_sample_loop(
-            sample_fn, noise.shape, noise, clip_denoised=False, model_kwargs=model_kwargs, progress=False,
-            temperature=temperature
-        )
+#     def sample(self, z, temperature=1.0, cfg=1.0):
+#         # diffusion loss sampling
+#         if not cfg == 1.0:
+#             noise = torch.randn(z.shape[0] // 2, self.in_channels).cuda()
+#             noise = torch.cat([noise, noise], dim=0)
+#             model_kwargs = dict(c=z, cfg_scale=cfg)
+#             sample_fn = self.net.forward_with_cfg
+#         else:
+#             noise = torch.randn(z.shape[0], self.in_channels).cuda()
+#             model_kwargs = dict(c=z)
+#             sample_fn = self.net.forward
 
-        return sampled_token_latent
+#         sampled_token_latent = self.gen_diffusion.p_sample_loop(
+#             sample_fn, noise.shape, noise, clip_denoised=False, model_kwargs=model_kwargs, progress=False,
+#             temperature=temperature
+#         )
+
+#         return sampled_token_latent

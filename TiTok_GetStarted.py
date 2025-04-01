@@ -11,7 +11,7 @@ from modeling.titok import TiTok
 # "tokenizer_titok_ll32_vae_c16_imagenet", "tokenizer_titok_sl256_vq8k_imagenet", "tokenizer_titok_bl128_vq8k_imagenet",
 # "tokenizer_titok_bl64_vq8k_imagenet",]
 print("debug")
-titok_tokenizer = TiTok.from_pretrained("ckpt/tokenizer_titok_l32_imagenet")
+titok_tokenizer = TiTok.from_pretrained("ckpt/tokenizer_titok_ll32_vae_c16_imagenet")
 titok_tokenizer.eval()
 titok_tokenizer.requires_grad_(False)
 titok_generator = ImageBert.from_pretrained("ckpt/generator_titok_l32_imagenet")
@@ -34,6 +34,8 @@ titok_generator = titok_generator.to(device)
 # reconstruct an image. I.e., image -> 32 tokens -> image
 # img_path = "assets/ILSVRC2012_val_00008636.png"
 img_path = "assets/generated_48.png"
+img_name = img_path.split('/')[-1]
+
 image = torch.from_numpy(np.array(Image.open(img_path)).astype(np.float32)).permute(2, 0, 1).unsqueeze(0) / 255.0
 # tokenization
 if titok_tokenizer.quantize_mode == "vq": # examine encode
@@ -49,18 +51,18 @@ print(f"image {img_path} is encoded into tokens {encoded_tokens}, with shape {en
 reconstructed_image = titok_tokenizer.decode_tokens(encoded_tokens) # examine decoder
 reconstructed_image = torch.clamp(reconstructed_image, 0.0, 1.0)
 reconstructed_image = (reconstructed_image * 255.0).permute(0, 2, 3, 1).to("cpu", dtype=torch.uint8).numpy()[0]
-reconstructed_image = Image.fromarray(reconstructed_image).save("assets/generated_48_recon.png")
-
-# generate an image
-sample_labels = [torch.randint(0, 999, size=(1,)).item()] # random IN-1k class
-generated_image = demo_util.sample_fn(
-    generator=titok_generator,
-    tokenizer=titok_tokenizer,
-    labels=sample_labels,
-    guidance_scale=4.5,
-    randomize_temperature=1.0,
-    num_sample_steps=8,
-    device=device
-)
-Image.fromarray(generated_image[0]).save(f"assets/generated_{sample_labels[0]}.png")
-print("assets/generated_{sample_labels[0]}.png is saved")
+reconstructed_image = Image.fromarray(reconstructed_image).save( f"results/{img_name}" )
+if titok_tokenizer.quantize_mode == 'vq':
+    # generate an image
+    sample_labels = [torch.randint(0, 999, size=(1,)).item()] # random IN-1k class
+    generated_image = demo_util.sample_fn(
+        generator=titok_generator,
+        tokenizer=titok_tokenizer,
+        labels=sample_labels,
+        guidance_scale=4.5,
+        randomize_temperature=1.0,
+        num_sample_steps=8,
+        device=device
+    )
+    Image.fromarray(generated_image[0]).save(f"results/generated_{sample_labels[0]}.png")
+    print(f"results/generated_{sample_labels[0]}.png is saved")
