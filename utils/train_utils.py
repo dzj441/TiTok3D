@@ -24,7 +24,7 @@ import glob
 from collections import defaultdict
 import open_clip
 
-# from data import SimpleImageDataset, PretoeknizedDataSetJSONL, PretokenizedWebDataset
+from dataset.data import DecordVideoDataset
 import torch
 from torch.utils.data import DataLoader
 from omegaconf import OmegaConf
@@ -106,7 +106,7 @@ def create_model_and_loss_module(config, logger, accelerator,
         loss_cls = ReconstructionLoss_Stage2 if config.model.vq_model.finetune_decoder else ReconstructionLoss_Stage1
     elif model_type == "titok3D":
         model_cls = TiTok3D
-        loss_cls = ReconstructionLoss_Single_Stage # needs modification Nlauer2Ddon't accept 3D input needs NLayer3D
+        loss_cls = ReconstructionLoss_Single_Stage 
     else:
         raise ValueError(f"Unsupported model_type {model_type}")
     model = model_cls(config)
@@ -247,63 +247,52 @@ def create_lr_scheduler(config, logger, accelerator, optimizer, discriminator_op
 def create_dataloader(config, logger, accelerator):
     """Creates data loader for training and testing."""
     logger.info("Creating dataloaders.")
-    total_batch_size_without_accum = config.training.per_gpu_batch_size * accelerator.num_processes
-    total_batch_size = (
-        config.training.per_gpu_batch_size * accelerator.num_processes * config.training.gradient_accumulation_steps
-    )
-    # We use webdataset for data loading. The dataloaders are created with sampling with replacement.
-    # We don't do dataset resuming here, instead we resample the shards and buffer each time. The sampling is stochastic.
-    # This means that the dataloading is not deterministic, but it's fast and efficient.
+    # total_batch_size_without_accum = config.training.per_gpu_batch_size * accelerator.num_processes
+    # total_batch_size = (
+    #     config.training.per_gpu_batch_size * accelerator.num_processes * config.training.gradient_accumulation_steps
+    # )
+
     preproc_config = config.dataset.preprocessing
     dataset_config = config.dataset.params
+    loader_config = config.dataset.loader
 
-    # T2I uses a pretokenized dataset for speed-up.
-    if dataset_config.get("pretokenization", "") and dataset_config.get("dataset_with_text_label", False) is True:
-        dataset = PretokenizedWebDataset(
-            train_shards_path=dataset_config.train_shards_path_or_url,
-            eval_shards_path=dataset_config.eval_shards_path_or_url,
-            num_train_examples=config.experiment.max_train_examples,
-            per_gpu_batch_size=config.training.per_gpu_batch_size,
-            global_batch_size=total_batch_size_without_accum,
-            num_workers_per_gpu=dataset_config.num_workers_per_gpu,
-            resize_shorter_edge=preproc_config.resize_shorter_edge,
-            crop_size=preproc_config.crop_size,
-            random_crop=preproc_config.random_crop,
-            random_flip=preproc_config.random_flip,
-            normalize_mean=preproc_config.normalize_mean,
-            normalize_std=preproc_config.normalize_std,
-            process_recap=preproc_config.get("preproc_recap", True),
-            use_recap_prob=preproc_config.get("use_recap_prob", 0.95)
-        )
-        train_dataloader, eval_dataloader = dataset.train_dataloader, dataset.eval_dataloader
-    # SimpleImageDataset
-    elif dataset_config.get("pretokenization", "") and dataset_config.get("dataset_with_text_label", False) is False:
-        dataset = SimpleImageDataset(
-            train_shards_path=dataset_config.train_shards_path_or_url,
-            eval_shards_path=dataset_config.eval_shards_path_or_url,
-            num_train_examples=config.experiment.max_train_examples,
-            per_gpu_batch_size=config.training.per_gpu_batch_size,
-            global_batch_size=total_batch_size_without_accum,
-            num_workers_per_gpu=dataset_config.num_workers_per_gpu,
-            resize_shorter_edge=preproc_config.resize_shorter_edge,
-            crop_size=preproc_config.crop_size,
-            random_crop=preproc_config.random_crop,
-            random_flip=preproc_config.random_flip,
-            dataset_with_class_label=dataset_config.get("dataset_with_class_label", True),
-            dataset_with_text_label=dataset_config.get("dataset_with_text_label", False),
-            res_ratio_filtering=preproc_config.get("res_ratio_filtering", False),
-        )
-        train_dataloader, eval_dataloader = dataset.train_dataloader, dataset.eval_dataloader
-    # potentially, use a pretokenized dataset for ImageNet speed-up.
-    else:
-        if dataset_config.get("pretokenization", ""):
-            train_dataloader = DataLoader(
-                PretoeknizedDataSetJSONL(dataset_config.pretokenization),
-                batch_size=config.training.per_gpu_batch_size,
-                shuffle=True, drop_last=True, pin_memory=True)
-            train_dataloader.num_batches = math.ceil(
-                config.experiment.max_train_examples / total_batch_size_without_accum)
+    train_dataset = DecordVideoDataset(
+        data_folder= dataset_config.train_path,
+        data_list= dataset_config.train_list,
+        fps= dataset_config.fps ,
+        sequence_length= preproc_config.temporal_size,
+        train = True,
+        resolution = preproc_config.spatial_size,
+        resizecrop= preproc_config.get("resizecrop",False) ,       
+    )
+    eval_dataset = DecordVideoDataset(
+        data_folder= dataset_config.eval_path,
+        data_list= dataset_config.eval_list,
+        fps= dataset_config.fps, 
+        sequence_length= preproc_config.temporal_size,
+        train = False,
+        resolution = preproc_config.spatial_size,
+        resizecrop= preproc_config.get("resizecrop",False),
+    )
     
+    train_dataloader = DataLoader(
+        dataset= train_dataset,
+        batch_size= config.training.per_gpu_batch_size,
+        shuffle= loader_config.shuffle,
+        drop_last= loader_config.drop_last,
+        pin_memory= loader_config.pin_memory,
+        num_workers= loader_config.num_workers,
+    )
+
+    eval_dataloader = DataLoader(
+        dataset= eval_dataset,
+        batch_size= 1,
+        shuffle= False,
+        drop_last= loader_config.drop_last,
+        pin_memory= loader_config.pin_memory,
+        num_workers= loader_config.num_workers,
+    )    
+
     return train_dataloader, eval_dataloader
 
 

@@ -179,3 +179,5 @@ titok3D_ll32_vae_run1/
 # wandb
 wandb/
 dataset/coinrun
+results/
+*.pyc

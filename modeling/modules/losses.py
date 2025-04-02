@@ -28,7 +28,7 @@ from torch.cuda.amp import autocast
 from modeling.diffusion import create_diffusion
 from modeling.modules.blocks import SimpleMLPAdaLN
 from .perceptual_loss import PerceptualLoss
-from .discriminator import NLayerDiscriminator
+from .discriminator import NLayerDiscriminator,NLayerDiscriminator3D
 
 
 def hinge_d_loss(logits_real: torch.Tensor, logits_fake: torch.Tensor) -> torch.Tensor:
@@ -66,6 +66,7 @@ def compute_lecam_loss(
 
 
 class ReconstructionLoss_Stage1(torch.nn.Module):
+    # TODO: modify stage1 loss for TiTok3D
     def __init__(
         self,
         config
@@ -116,9 +117,9 @@ class ReconstructionLoss_Stage2(torch.nn.Module):
         Args:
             config: A dictionary, the configuration for the model and everything else.
         """
-        super().__init__()
+        super().__init__() 
         loss_config = config.losses
-        self.discriminator = NLayerDiscriminator()
+        self.discriminator = NLayerDiscriminator3D(input_nc=3)
 
         self.reconstruction_loss = loss_config.reconstruction_loss
         self.reconstruction_weight = loss_config.reconstruction_weight
@@ -177,8 +178,15 @@ class ReconstructionLoss_Stage2(torch.nn.Module):
             raise ValueError(f"Unsuppored reconstruction_loss {self.reconstruction_loss}")
         reconstruction_loss *= self.reconstruction_weight
 
-        # Compute perceptual loss.
-        perceptual_loss = self.perceptual_loss(inputs, reconstructions).mean()
+        perceptual_loss = torch.zeros((), device=inputs.device)
+        if inputs.dim() == 5:
+            # for video
+            imaged_inputs = rearrange(inputs,'b c t h w ->(b t) c h w')
+            imaged_reconstructions = rearrange(reconstructions,'b c t h w ->(b t) c h w')
+            perceptual_loss = self.perceptual_loss(imaged_inputs,imaged_reconstructions).mean()
+        else:
+            # Compute perceptual loss.
+            perceptual_loss = self.perceptual_loss(inputs, reconstructions).mean()
 
         # Compute discriminator loss.
         generator_loss = torch.zeros((), device=inputs.device)
@@ -188,7 +196,7 @@ class ReconstructionLoss_Stage2(torch.nn.Module):
             # Disable discriminator gradients.
             for param in self.discriminator.parameters():
                 param.requires_grad = False
-            logits_fake = self.discriminator(reconstructions)
+            logits_fake,_ = self.discriminator(reconstructions)
             generator_loss = -torch.mean(logits_fake)
 
         d_weight *= self.discriminator_weight
@@ -221,7 +229,9 @@ class ReconstructionLoss_Stage2(torch.nn.Module):
                                reconstructions: torch.Tensor,
                                global_step: int,
                                ) -> Tuple[torch.Tensor, Mapping[Text, torch.Tensor]]:
-        """Discrminator training step."""
+        """Discrminator training step.
+           TODO: fix variable names for Video
+        """
         discriminator_factor = self.discriminator_factor if self.should_discriminator_be_trained(global_step) else 0
         loss_dict = {}
         # Turn the gradients on.
@@ -229,8 +239,8 @@ class ReconstructionLoss_Stage2(torch.nn.Module):
             param.requires_grad = True
 
         real_images = inputs.detach().requires_grad_(True)
-        logits_real = self.discriminator(real_images)
-        logits_fake = self.discriminator(reconstructions.detach())
+        logits_real,_ = self.discriminator(real_images)
+        logits_fake,_ = self.discriminator(reconstructions.detach())
 
         discriminator_loss = discriminator_factor * hinge_d_loss(logits_real=logits_real, logits_fake=logits_fake)
 
@@ -284,13 +294,21 @@ class ReconstructionLoss_Single_Stage(ReconstructionLoss_Stage2):
         if self.reconstruction_loss == "l1":
             reconstruction_loss = F.l1_loss(inputs, reconstructions, reduction="mean")
         elif self.reconstruction_loss == "l2":
-            reconstruction_loss = F.mse_loss(inputs, reconstructions, reduction="mean")
+            reconstruction_loss = F.mse_loss(inputs, reconstructions, reduction="mean") # scalar
         else:
             raise ValueError(f"Unsuppored reconstruction_loss {self.reconstruction_loss}")
         reconstruction_loss *= self.reconstruction_weight
 
         # Compute perceptual loss.
-        perceptual_loss = self.perceptual_loss(inputs, reconstructions).mean()
+        perceptual_loss = torch.zeros((), device=inputs.device)
+        if inputs.dim() == 5:
+            # for video
+            imaged_inputs = rearrange(inputs,'b c t h w ->(b t) c h w')
+            imaged_reconstructions = rearrange(reconstructions,'b c t h w ->(b t) c h w')
+            perceptual_loss = self.perceptual_loss(imaged_inputs,imaged_reconstructions).mean()
+        else:
+            # Compute perceptual loss.
+            perceptual_loss = self.perceptual_loss(inputs, reconstructions).mean()
 
         # Compute discriminator loss.
         generator_loss = torch.zeros((), device=inputs.device)
@@ -300,10 +318,10 @@ class ReconstructionLoss_Single_Stage(ReconstructionLoss_Stage2):
             # Disable discriminator gradients.
             for param in self.discriminator.parameters():
                 param.requires_grad = False
-            logits_fake = self.discriminator(reconstructions)
+            logits_fake,_ = self.discriminator(reconstructions)
             generator_loss = -torch.mean(logits_fake)
 
-        d_weight *= self.discriminator_weight
+        d_weight *= self.discriminator_weight # scalar
 
         if self.quantize_mode == "vq":
             # Compute quantizer loss.
@@ -353,93 +371,3 @@ class ReconstructionLoss_Single_Stage(ReconstructionLoss_Stage2):
 
         return total_loss, loss_dict
 
-
-
-# class MLMLoss(torch.nn.Module):
-#     def __init__(self,
-#                  config):
-#         super().__init__()
-#         self.label_smoothing = config.losses.label_smoothing
-#         self.loss_weight_unmasked_token = config.losses.loss_weight_unmasked_token
-#         self.criterion = torch.nn.CrossEntropyLoss(label_smoothing=self.label_smoothing,
-#                                                    reduction="none")
-    
-#     def forward(self, inputs: torch.Tensor, targets: torch.Tensor,
-#                 weights=None) -> Tuple[torch.Tensor, Mapping[Text, torch.Tensor]]:
-#         inputs = rearrange(inputs, "b n c -> b c n")
-#         loss = self.criterion(inputs, targets)
-#         weights = weights.to(loss)
-#         loss_weights = (1.0 - weights) * self.loss_weight_unmasked_token + weights # set 0 to self.loss_weight_unasked_token
-#         loss = (loss * loss_weights).sum() / (loss_weights.sum() + 1e-8)
-#         # we only compute correct tokens on masked tokens
-#         correct_tokens = ((torch.argmax(inputs, dim=1) == targets) * weights).sum(dim=1) / (weights.sum(1) + 1e-8)
-#         return loss, {"loss": loss, "correct_tokens": correct_tokens.mean()}
-    
-
-# class ARLoss(torch.nn.Module):
-#     def __init__(self, config):
-#         super().__init__()
-#         self.target_vocab_size = config.model.vq_model.codebook_size
-#         self.criterion = torch.nn.CrossEntropyLoss(reduction="mean")
-    
-#     def forward(self, logits: torch.Tensor, labels: torch.Tensor) -> Tuple[torch.Tensor, Mapping[Text, torch.Tensor]]:
-#         shift_logits = logits[..., :-1, :].permute(0, 2, 1).contiguous() # NLC->NCL
-#         shift_labels = labels.contiguous()
-#         shift_logits = shift_logits.view(shift_logits.shape[0], self.target_vocab_size, -1)
-#         shift_labels = shift_labels.view(shift_labels.shape[0], -1)
-#         shift_labels = shift_labels.to(shift_logits.device)
-#         loss = self.criterion(shift_logits, shift_labels)
-#         correct_tokens = (torch.argmax(shift_logits, dim=1) == shift_labels).sum(dim=1) / shift_labels.size(1)
-#         return loss, {"loss": loss, "correct_tokens": correct_tokens.mean()}
-    
-
-# class DiffLoss(nn.Module):
-#     """Diffusion Loss"""
-#     def __init__(self, config):
-#         super(DiffLoss, self).__init__()
-#         self.in_channels = config.model.vq_model.token_size
-
-#         self.net = SimpleMLPAdaLN(
-#             in_channels=self.in_channels,
-#             model_channels=config.losses.diffloss_w,
-#             out_channels=self.in_channels * 2,  # for vlb loss
-#             z_channels=config.model.maskgen.decoder_embed_dim,
-#             num_res_blocks=config.losses.diffloss_d,
-#             grad_checkpointing=config.get("training.grad_checkpointing", False),
-#         )
-
-#         self.train_diffusion = create_diffusion(timestep_respacing="", noise_schedule="cosine")
-#         self.gen_diffusion = create_diffusion(timestep_respacing=config.losses.get("num_sampling_steps", "100"), noise_schedule="cosine")
-
-#     def forward(self, target, z, mask=None):
-#         t = torch.randint(0, self.train_diffusion.num_timesteps, (target.shape[0],), device=target.device)
-#         model_kwargs = dict(c=z)
-#         loss_dict = self.train_diffusion.training_losses(self.net, target, t, model_kwargs)
-#         loss = loss_dict["loss"]
-#         if mask is not None:
-#             loss = (loss * mask).sum() / mask.sum()
-
-#         loss_dict = dict(
-#             diff_loss=loss.clone().mean().detach(),
-#         )
-
-#         return loss.mean(), loss_dict
-
-#     def sample(self, z, temperature=1.0, cfg=1.0):
-#         # diffusion loss sampling
-#         if not cfg == 1.0:
-#             noise = torch.randn(z.shape[0] // 2, self.in_channels).cuda()
-#             noise = torch.cat([noise, noise], dim=0)
-#             model_kwargs = dict(c=z, cfg_scale=cfg)
-#             sample_fn = self.net.forward_with_cfg
-#         else:
-#             noise = torch.randn(z.shape[0], self.in_channels).cuda()
-#             model_kwargs = dict(c=z)
-#             sample_fn = self.net.forward
-
-#         sampled_token_latent = self.gen_diffusion.p_sample_loop(
-#             sample_fn, noise.shape, noise, clip_denoised=False, model_kwargs=model_kwargs, progress=False,
-#             temperature=temperature
-#         )
-
-#         return sampled_token_latent

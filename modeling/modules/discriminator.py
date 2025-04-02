@@ -19,13 +19,14 @@ TODO: Add reference to Mark Weber's tech report on the improved discriminator ar
 import functools
 import math
 from typing import Tuple
-
+import numpy as np
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+from einops import rearrange
 from .maskgit_vqgan import Conv2dSame
+from .diffAug import DiffAugment
 
 
 class BlurBlock(torch.nn.Module):
@@ -139,3 +140,144 @@ class NLayerDiscriminator(torch.nn.Module):
         hidden_states = self.pool(hidden_states)
 
         return self.to_logits(hidden_states)
+
+class NLayerDiscriminator3D(nn.Module):
+    def __init__(self, input_nc, ndf=64, n_layers=3, norm_type="batch", use_sigmoid=False, getIntermFeat=True, activation="leaky_relu", apply_blur=False, apply_noise=False):
+        '''
+        borrowed from OmniTokenizer.
+        https://github.com/FoundationVision/OmniTokenizer/blob/main/OmniTokenizer/base.py#L502
+        '''
+        super(NLayerDiscriminator3D, self).__init__()
+        self.getIntermFeat = getIntermFeat
+        self.n_layers = n_layers
+
+        if apply_noise:
+            self.noise = ApplyNoise(channels=input_nc)
+        else:
+            self.noise = nn.Identity()
+
+        activation_func = nn.LeakyReLU(0.2, True) if activation == "leaky_relu" else nn.Tanh() 
+
+        kw = 4
+        padw = int(np.ceil((kw-1.0)/2))
+        sequence = [[nn.Conv3d(input_nc, ndf, kernel_size=kw, stride=2, padding=padw), activation_func]]
+
+        nf = ndf
+        for n in range(1, n_layers):
+            nf_prev = nf
+            nf = min(nf * 2, 512)
+            sequence += [[
+                Blur2d(f=None) if apply_blur else nn.Identity(),
+                nn.Conv3d(nf_prev, nf, kernel_size=kw, stride=2, padding=padw),
+                Normalize(nf, norm_type), 
+                activation_func
+            ]]
+
+        nf_prev = nf
+        nf = min(nf * 2, 512)
+        sequence += [[
+            nn.Conv3d(nf_prev, nf, kernel_size=kw, stride=1, padding=padw),
+            Normalize(nf, norm_type),
+            activation_func
+        ]]
+
+        sequence += [[
+            nn.Conv3d(nf, 1, kernel_size=kw, stride=1, padding=padw),
+            Normalize(1, norm_type),
+            activation_func
+        ]]
+
+        if use_sigmoid:
+            sequence += [[nn.Sigmoid()]]
+
+        if getIntermFeat:
+            for n in range(len(sequence)):
+                setattr(self, 'model'+str(n), nn.Sequential(*sequence[n]))
+        else:
+            sequence_stream = []
+            for n in range(len(sequence)):
+                sequence_stream += sequence[n]
+            self.model = nn.Sequential(*sequence_stream)
+
+    def forward(self, input, apply_diffaug=False):
+        if self.getIntermFeat:
+            trans_input = self.noise(input)
+            if apply_diffaug:
+                B = input.shape[0]
+                trans_input = rearrange(trans_input, "b c t h w -> (b t) c h w") # B C T H W
+                trans_input = DiffAugment(trans_input, policy='color,translation,cutout')
+                trans_input = rearrange(trans_input, "(b t) c h w -> b c t h w", b=B)
+            
+            res = [trans_input]
+            for n in range(self.n_layers+2):
+                model = getattr(self, 'model'+str(n))
+                res.append(model(res[-1]))
+                    
+            return res[-1], res[1:]
+        else:
+            # return self.model(input), _
+            return self.model(input), None
+
+class ApplyNoise(nn.Module):
+    def __init__(self, channels):
+        super().__init__()
+        self.weight = nn.Parameter(torch.zeros(channels))
+
+    def forward(self, x, noise=None):
+        if x.ndim == 4:
+            # image: B C H W
+            if noise is None:
+                noise = torch.randn(x.size(0), 1, x.size(2), x.size(3), device=x.device, dtype=x.dtype)
+            return x + self.weight.view(1, -1, 1, 1) * noise.to(x.device)
+        
+        else:
+            # video: B C T H W
+            if noise is None:
+                noise = torch.randn(x.size(0), 1, x.size(2), x.size(3), x.size(4), device=x.device, dtype=x.dtype)
+
+            return x + self.weight.view(1, -1, 1, 1, 1) * noise.to(x.device)
+        
+class Blur2d(nn.Module):
+    def __init__(self, f=[1,2,1], normalize=True, flip=False, stride=1):
+        """
+            depthwise_conv2d:
+            https://blog.csdn.net/mao_xiao_feng/article/details/78003476
+        """
+        super(Blur2d, self).__init__()
+        assert isinstance(f, list) or f is None, "kernel f must be an instance of python built_in type list!"
+
+        if f is not None:
+            f = torch.tensor(f, dtype=torch.float32)
+            f = f[:, None] * f[None, :]
+            f = f[None, None]
+            if normalize:
+                f = f / f.sum()
+            if flip:
+                # f = f[:, :, ::-1, ::-1]
+                f = torch.flip(f, [2, 3])
+            self.f = f
+        else:
+            self.f = None
+        self.stride = stride
+
+    def forward(self, x):
+        if self.f is not None:
+            # expand kernel channels
+            kernel = self.f.expand(x.size(1), -1, -1, -1).to(x.device)
+            x = F.conv2d(
+                x,
+                kernel,
+                stride=self.stride,
+                padding=int((self.f.size(2)-1)/2),
+                groups=x.size(1)
+            )
+            return x
+        else:
+            return x
+        
+def Normalize(in_channels, norm_type='group'):
+    assert norm_type in ['group', 'batch']
+    if norm_type == 'group':
+        return torch.nn.GroupNorm(num_groups=32, num_channels=in_channels, eps=1e-6, affine=True)
+    elif norm_type == 'batch':
+        return torch.nn.SyncBatchNorm(in_channels)

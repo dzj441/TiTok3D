@@ -40,12 +40,18 @@ losses:
 
 dataset:
     params:
-        # train_shards_path_or_url: "datacomp_sharded/train/datacomp-train-{000000..140089}.tar"
-        # eval_shards_path_or_url: "imagenet_sharded/val/imagenet-val-{0000..0009}.tar"
-        # num_workers_per_gpu: 12
-        # dataset_with_class_label: False
-        # dataset_with_text_label: False
-        none: 0
+        train_path: "datasets/UCF-101/train"
+        eval_path: "datasets/UCF-101/test"
+        train_list: "datasets/UCF-101/trainlist.txt"
+        eval_list: "datasets/UCF-101/testlist.txt"        
+        fps: 16 
+
+    loader:
+        num_workers: 32
+        pin_memory: True
+        shuffle: True
+        drop_last: False
+
     preprocessing:
         spatial_size: 128
         temporal_size: 16
@@ -68,7 +74,7 @@ lr_scheduler:
 
 training:
     gradient_accumulation_steps: 1
-    per_gpu_batch_size: 32
+    per_gpu_batch_size: 2
     mixed_precision: "fp16"
     enable_tf32: True
     enable_wandb: True

@@ -37,27 +37,6 @@ from utils.train_utils import (
     create_evaluator, auto_resume, save_checkpoint, 
     train_one_epoch)
 
-def simulation(toyModel,config):
-    device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
-    toyModel.to(device)
-
-    ranIn = torch.randn((2,3,16,128,128),device=device)
-    # tokenization
-    if config.model.vq_model.quantize_mode == "vq": # examine encode
-        # encoded_tokens = titok_tokenizer.encode(image.to(device))[1]["min_encoding_indices"] # [1,1,32] the selected indices
-        pass
-    elif config.model.vq_model.quantize_mode == "vae":
-        posteriors = toyModel.encode(ranIn.to(device))[1]
-        encoded_tokens = posteriors.sample()
-    else:
-        raise NotImplementedError
-    # image assets/ILSVRC2012_val_00010240.png is encoded into tokens tensor([[[ 887, 3979,  349,  720, 2809, 2743, 2101,  603, 2205, 1508, 1891, 4015, 1317, 2956, 3774, 2296,  484, 2612, 3472, 2330, 3140, 3113, 1056, 3779,  654, 2360, 1901, 2908, 2169,  953, 1326, 2598]]], device='cuda:0'), with shape torch.Size([1, 1, 32])
-    print(f"input is encoded into tokens {encoded_tokens}, with shape {encoded_tokens.shape}")
-    # de-tokenization
-    reconstructed = toyModel.decode_tokens(encoded_tokens) # examine decoder
-
-    assert reconstructed.shape == ranIn.shape   
-    print("simulation success")
     
 def call_code_exit():
     cleanup()
@@ -99,7 +78,7 @@ def main():
     )
 
     logger = setup_logger(name="TiTok", log_level="INFO",
-     output_file=f"{output_dir}/log{accelerator.process_index}.txt")
+    output_file=f"{output_dir}/log{accelerator.process_index}.txt")
 
     # We need to initialize the trackers we use, and also store our configuration.
     # The trackers initializes automatically on the main process.
@@ -127,13 +106,7 @@ def main():
                                                         accelerator)
 
     model, ema_model, loss_module = create_model_and_loss_module(
-        config, logger, accelerator, model_type="titok3D")
-
-    if accelerator.is_main_process:
-        simulation(model,config)    
-    
-    call_code_exit()
-
+        config, logger, accelerator, model_type="titok3D") 
     
     optimizer, discriminator_optimizer = create_optimizer(config, logger, model, loss_module)
 
@@ -142,19 +115,20 @@ def main():
 
     train_dataloader, eval_dataloader = create_dataloader(config, logger, accelerator)
 
+
     # Set up evaluator.
     evaluator = create_evaluator(config, logger, accelerator)
 
     # Prepare everything with accelerator.
-    logger.info("Preparing model, optimizer and dataloaders")
-    # The dataloader are already aware of distributed training, so we don't need to prepare them.
-    if config.model.vq_model.finetune_decoder:
+    logger.info("Preparing model, optimizer and dataloaders") 
+    
+    if config.model.vq_model.finetune_decoder: # for vq
         model, loss_module, optimizer, discriminator_optimizer, lr_scheduler, discriminator_lr_scheduler = accelerator.prepare(
             model, loss_module, optimizer, discriminator_optimizer, lr_scheduler, discriminator_lr_scheduler
         )
     else:
-        model, optimizer, lr_scheduler = accelerator.prepare(
-            model, optimizer, lr_scheduler
+        model, optimizer, lr_scheduler,train_dataloader,eval_dataloader = accelerator.prepare(
+            model, optimizer, lr_scheduler,train_dataloader,eval_dataloader
         )
     if config.training.use_ema:
         ema_model.to(accelerator.device)
@@ -177,10 +151,14 @@ def main():
     global_step = 0
     first_epoch = 0
 
+
+    
     global_step, first_epoch = auto_resume(
         config, logger, accelerator, ema_model, num_update_steps_per_epoch,
         strict=True)
 
+    call_code_exit()
+    
     for current_epoch in range(first_epoch, num_train_epochs):
         accelerator.print(f"Epoch {current_epoch}/{num_train_epochs-1} started.")
         global_step = train_one_epoch(config, logger, accelerator,

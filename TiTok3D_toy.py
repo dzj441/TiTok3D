@@ -7,7 +7,7 @@ sys.path.append(os.getcwd())
 import torch
 from modeling.titok import TiTok3D
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-CONFIG_PATH = "config/infer/titok3D_ll32_vae_c16.yaml"
+CONFIG_PATH = "configs/infer/titok3D_ll32_vae_c16.yaml"
 config = OmegaConf.load(CONFIG_PATH)
 toyModel = TiTok3D(config=config)
 toyModel.to(device)

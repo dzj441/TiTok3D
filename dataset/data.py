@@ -20,10 +20,10 @@ from torchvision.datasets.video_utils import VideoClips
 import pytorch_lightning as pl
 from transformers import BertTokenizer
 
-from video_utils import VideoNorm, load_video_from_path_decord, load_video_from_path_tvio, VideoRandomSquareCrop
-from coinrun.coinrun_data import CoinRunDataset
-from coinrun.coinrun_data_v2 import CoinRunDatasetV2
-from coinrun.tokenizer import tokenizer
+from .video_utils import VideoNorm, load_video_from_path_decord, load_video_from_path_tvio, VideoRandomSquareCrop
+from .coinrun.coinrun_data import CoinRunDataset
+from .coinrun.coinrun_data_v2 import CoinRunDatasetV2
+from .coinrun.tokenizer import tokenizer
 from imagenet_stubs.imagenet_2012_labels import label_to_name
 
 try:
@@ -116,6 +116,9 @@ class ImageDataset(data.Dataset):
         img = Image.open(full_img_path).convert('RGB')
         return {"video": self.augmentations(img), "label": int(img_label), "path": img_path}
 
+'''
+modified from OmniTokenizer
+'''
 
 class DecordVideoDataset(data.Dataset):
     """ Generic dataset for videos files stored in folders
