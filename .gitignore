@@ -181,3 +181,5 @@ wandb/
 dataset/coinrun
 results/
 *.pyc
+temp_weights/
+datasets/

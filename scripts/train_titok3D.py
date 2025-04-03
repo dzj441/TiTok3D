@@ -100,7 +100,7 @@ def main():
         
     accelerator.wait_for_everyone()
     
-
+    pretrained_tokenizer = None
     if config.model.vq_model.quantize_mode == 'vq':
         pretrained_tokenizer = create_pretrained_tokenizer(config,
                                                         accelerator)
@@ -133,11 +133,11 @@ def main():
     if config.training.use_ema:
         ema_model.to(accelerator.device)
 
-    total_batch_size_without_accum = config.training.per_gpu_batch_size * accelerator.num_processes
+    total_batch_size_without_accum = config.training.per_gpu_batch_size * accelerator.num_processes # 2
     num_batches = math.ceil(
-        config.experiment.max_train_examples / total_batch_size_without_accum)
-    num_update_steps_per_epoch = math.ceil(num_batches / config.training.gradient_accumulation_steps)
-    num_train_epochs = math.ceil(config.training.max_train_steps / num_update_steps_per_epoch)
+        config.experiment.max_train_examples / total_batch_size_without_accum) # 685 800 000/2
+    num_update_steps_per_epoch = math.ceil(num_batches / config.training.gradient_accumulation_steps) # 342 400 000
+    num_train_epochs = math.ceil(config.training.max_train_steps / num_update_steps_per_epoch) # 650000/ 342 400 000
 
     # Start training.
     logger.info("***** Running training *****")
@@ -148,6 +148,7 @@ def main():
         config.training.per_gpu_batch_size *
         accelerator.num_processes *
         config.training.gradient_accumulation_steps)}""")
+    logger.info(f"    totally {num_train_epochs} epochs")
     global_step = 0
     first_epoch = 0
 
@@ -157,8 +158,9 @@ def main():
         config, logger, accelerator, ema_model, num_update_steps_per_epoch,
         strict=True)
 
-    call_code_exit()
-    
+    if config.training.get("epoch",0) != 0:
+        num_train_epochs =  config.training.get("epoch")
+           
     for current_epoch in range(first_epoch, num_train_epochs):
         accelerator.print(f"Epoch {current_epoch}/{num_train_epochs-1} started.")
         global_step = train_one_epoch(config, logger, accelerator,

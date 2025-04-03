@@ -207,7 +207,7 @@ class TiTok(BaseModel, PyTorchModelHubMixin, tags=["arxiv:2406.07550", "image-to
         decoded = self.decode(z_quantized)
         return decoded, result_dict
 
-class TiTok3D(BaseModel):
+class TiTok3D(BaseModel,PyTorchModelHubMixin):
     def __init__(self, config):
 
         if isinstance(config, dict):

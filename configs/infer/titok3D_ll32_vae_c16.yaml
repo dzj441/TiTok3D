@@ -6,7 +6,7 @@ model:
   vq_model:
     quantize_mode: "vae"
     token_size: 16
-    vit_enc_model_size: "base"
+    vit_enc_model_size: "large"
     vit_dec_model_size: "large"
     vit_enc_spatial_patch_size: 16
     vit_enc_temporal_patch_size: 4

@@ -291,6 +291,7 @@ class ReconstructionLoss_Single_Stage(ReconstructionLoss_Stage2):
         """Generator training step."""
         inputs = inputs.contiguous()
         reconstructions = reconstructions.contiguous()
+
         if self.reconstruction_loss == "l1":
             reconstruction_loss = F.l1_loss(inputs, reconstructions, reduction="mean")
         elif self.reconstruction_loss == "l2":
@@ -301,6 +302,7 @@ class ReconstructionLoss_Single_Stage(ReconstructionLoss_Stage2):
 
         # Compute perceptual loss.
         perceptual_loss = torch.zeros((), device=inputs.device)
+
         if inputs.dim() == 5:
             # for video
             imaged_inputs = rearrange(inputs,'b c t h w ->(b t) c h w')
