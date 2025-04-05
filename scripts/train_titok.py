@@ -19,10 +19,8 @@ Reference:
 """
 import math
 import os
-import sys
-sys.path.append(os.getcwd())
 from pathlib import Path
-import torch.distributed as dist 
+
 from accelerate.utils import set_seed
 from accelerate import Accelerator
 
@@ -37,15 +35,6 @@ from utils.train_utils import (
     create_evaluator, auto_resume, save_checkpoint, 
     train_one_epoch)
 
-    
-def call_code_exit():
-    cleanup()
-    print(":)")
-    exit(0)    
-
-def cleanup():
-    if dist.is_initialized():
-        dist.destroy_process_group()
 
 def main():
     workspace = os.environ.get('WORKSPACE', '')
@@ -68,7 +57,7 @@ def main():
     tracker = "tensorboard"
     if config.training.enable_wandb:
         tracker = "wandb"
-    
+
     accelerator = Accelerator(
         gradient_accumulation_steps=config.training.gradient_accumulation_steps,
         mixed_precision=config.training.mixed_precision,
@@ -78,7 +67,7 @@ def main():
     )
 
     logger = setup_logger(name="TiTok", log_level="INFO",
-    output_file=f"{output_dir}/log{accelerator.process_index}.txt")
+     output_file=f"{output_dir}/log{accelerator.process_index}.txt")
 
     # We need to initialize the trackers we use, and also store our configuration.
     # The trackers initializes automatically on the main process.
@@ -93,21 +82,19 @@ def main():
     if config.training.seed is not None:
         set_seed(config.training.seed, device_specific=True)
 
-    if config.model.vq_model.quantize_mode == 'vq' and accelerator.local_process_index == 0: # VAE don't need this 
+    if accelerator.local_process_index == 0:
         # download the maskgit-vq tokenizer weight
         from huggingface_hub import hf_hub_download
         hf_hub_download(repo_id="fun-research/TiTok", filename=f"{config.model.vq_model.pretrained_tokenizer_weight}", local_dir="./")
         
     accelerator.wait_for_everyone()
-    
-    pretrained_tokenizer = None
-    if config.model.vq_model.quantize_mode == 'vq':
-        pretrained_tokenizer = create_pretrained_tokenizer(config,
-                                                        accelerator)
+
+    pretrained_tokenizer = create_pretrained_tokenizer(config,
+                                                       accelerator)
 
     model, ema_model, loss_module = create_model_and_loss_module(
-        config, logger, accelerator, model_type="titok3D") 
-    
+        config, logger, accelerator, model_type="titok")
+
     optimizer, discriminator_optimizer = create_optimizer(config, logger, model, loss_module)
 
     lr_scheduler, discriminator_lr_scheduler = create_lr_scheduler(
@@ -115,29 +102,28 @@ def main():
 
     train_dataloader, eval_dataloader = create_dataloader(config, logger, accelerator)
 
-
     # Set up evaluator.
     evaluator = create_evaluator(config, logger, accelerator)
 
     # Prepare everything with accelerator.
-    logger.info("Preparing model, optimizer and dataloaders") 
-    
-    if config.model.vq_model.finetune_decoder: # for vq
+    logger.info("Preparing model, optimizer and dataloaders")
+    # The dataloader are already aware of distributed training, so we don't need to prepare them.
+    if config.model.vq_model.finetune_decoder:
         model, loss_module, optimizer, discriminator_optimizer, lr_scheduler, discriminator_lr_scheduler = accelerator.prepare(
             model, loss_module, optimizer, discriminator_optimizer, lr_scheduler, discriminator_lr_scheduler
         )
     else:
-        model, optimizer, lr_scheduler,train_dataloader,eval_dataloader = accelerator.prepare(
-            model, optimizer, lr_scheduler,train_dataloader,eval_dataloader
+        model, optimizer, lr_scheduler = accelerator.prepare(
+            model, optimizer, lr_scheduler
         )
     if config.training.use_ema:
         ema_model.to(accelerator.device)
 
-    total_batch_size_without_accum = config.training.per_gpu_batch_size * accelerator.num_processes # 2
+    total_batch_size_without_accum = config.training.per_gpu_batch_size * accelerator.num_processes
     num_batches = math.ceil(
-        config.experiment.max_train_examples / total_batch_size_without_accum) # 685 800 000/2
-    num_update_steps_per_epoch = math.ceil(num_batches / config.training.gradient_accumulation_steps) # 342 400 000
-    num_train_epochs = math.ceil(config.training.max_train_steps / num_update_steps_per_epoch) # 650000/ 342 400 000
+        config.experiment.max_train_examples / total_batch_size_without_accum)
+    num_update_steps_per_epoch = math.ceil(num_batches / config.training.gradient_accumulation_steps)
+    num_train_epochs = math.ceil(config.training.max_train_steps / num_update_steps_per_epoch)
 
     # Start training.
     logger.info("***** Running training *****")
@@ -148,19 +134,13 @@ def main():
         config.training.per_gpu_batch_size *
         accelerator.num_processes *
         config.training.gradient_accumulation_steps)}""")
-    logger.info(f"    totally {num_train_epochs} epochs")
     global_step = 0
     first_epoch = 0
 
-
-    
     global_step, first_epoch = auto_resume(
         config, logger, accelerator, ema_model, num_update_steps_per_epoch,
         strict=True)
 
-    if config.training.get("epoch",0) != 0:
-        num_train_epochs =  config.training.get("epoch")
-           
     for current_epoch in range(first_epoch, num_train_epochs):
         accelerator.print(f"Epoch {current_epoch}/{num_train_epochs-1} started.")
         global_step = train_one_epoch(config, logger, accelerator,
@@ -177,7 +157,6 @@ def main():
                 f"Finishing training: Global step is >= Max train steps: {global_step} >= {config.training.max_train_steps}"
             )
             break
-
 
     accelerator.wait_for_everyone()
     # Save checkpoint at the end of training.

@@ -620,8 +620,9 @@ def train_one_epoch(config, logger, accelerator,
                     if accelerator.is_main_process:
                         eval_log = {f'eval/'+k: v for k, v in eval_scores.items()}
                         accelerator.log(eval_log, step=global_step + 1)
+                    
+                # accelerator.wait_for_everyone()
 
-                accelerator.wait_for_everyone()
 
             global_step += 1
 
@@ -630,7 +631,7 @@ def train_one_epoch(config, logger, accelerator,
                     f"Finishing training: Global step is >= Max train steps: {global_step} >= {config.training.max_train_steps}"
                 )
                 break
-
+            
 
     return global_step
 
@@ -1115,7 +1116,7 @@ def reconstruct_videos(model, original_videos, accelerator,
     aviroot = root / "avi"
     
     for i,vid in enumerate(reconstructed_videos):
-        save_video_imageio(vid,aviroot,mp4root)
+        save_video_imageio(vid,aviroot,mp4root,prefix=str(global_step)+"video_")
     model.train()
 
 

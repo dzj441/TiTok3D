@@ -4,8 +4,8 @@ experiment:
     name: "titok3D_ll32_vae_run1"
     output_dir: "titok3D_ll32_vae_run1"
     max_train_examples: 685_800_000
-    save_every: 50_000
-    eval_every: 50_000
+    save_every: 50_00
+    eval_every: 50_00
     generate_every: 5_000
     log_every: 50
     log_grad_norm_every: 1_000
@@ -33,9 +33,9 @@ losses:
     perceptual_loss: "lpips-convnext_s-1.0-0.1"
     perceptual_weight: 1.1
     reconstruction_loss: "l2"
-    reconstruction_weight: 1.0
+    reconstruction_weight: 2.0
     lecam_regularization_weight: 0.001
-    kl_weight: 1e-6
+    kl_weight: 1
     logvar_init: 0.0
 
 eval:
@@ -75,12 +75,12 @@ lr_scheduler:
     scheduler: "cosine"
     params:
         learning_rate: ${optimizer.params.learning_rate}
-        warmup_steps: 10_000
+        warmup_steps: 100
         end_lr: 1e-5
 
 training:
     gradient_accumulation_steps: 1
-    per_gpu_batch_size: 2
+    per_gpu_batch_size: 1
     mixed_precision: "fp16"
     enable_tf32: True
     enable_wandb: True
