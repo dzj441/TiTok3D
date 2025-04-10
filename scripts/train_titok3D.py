@@ -93,20 +93,20 @@ def main():
     if config.training.seed is not None:
         set_seed(config.training.seed, device_specific=True)
 
-    if config.model.vq_model.quantize_mode == 'vq' and accelerator.local_process_index == 0: # VAE don't need this 
-        # download the maskgit-vq tokenizer weight
-        from huggingface_hub import hf_hub_download
-        hf_hub_download(repo_id="fun-research/TiTok", filename=f"{config.model.vq_model.pretrained_tokenizer_weight}", local_dir="./")
+    # if config.model.vq_model.quantize_mode == 'vq' and accelerator.local_process_index == 0: # VAE don't need this ; also FSQ don't need
+    #     # download the maskgit-vq tokenizer weight
+    #     from huggingface_hub import hf_hub_download
+    #     hf_hub_download(repo_id="fun-research/TiTok", filename=f"{config.model.vq_model.pretrained_tokenizer_weight}", local_dir="./")
         
     accelerator.wait_for_everyone()
     
     pretrained_tokenizer = None
-    if config.model.vq_model.quantize_mode == 'vq':
-        pretrained_tokenizer = create_pretrained_tokenizer(config,
-                                                        accelerator)
-
+    # if config.model.vq_model.quantize_mode == 'vq':
+    #     pretrained_tokenizer = create_pretrained_tokenizer(config,
+    #                                                     accelerator)
+    model_type = config.model.vq_model.get("model_type","titok3D")
     model, ema_model, loss_module = create_model_and_loss_module(
-        config, logger, accelerator, model_type="titok3D") 
+        config, logger, accelerator, model_type=model_type) 
     
     optimizer, discriminator_optimizer = create_optimizer(config, logger, model, loss_module)
 
@@ -122,7 +122,7 @@ def main():
     # Prepare everything with accelerator.
     logger.info("Preparing model, optimizer and dataloaders") 
     
-    if config.model.vq_model.finetune_decoder: # for vq
+    if config.model.vq_model.get("need_discriminator",False): # for vq
         model, loss_module, optimizer, discriminator_optimizer, lr_scheduler, discriminator_lr_scheduler = accelerator.prepare(
             model, loss_module, optimizer, discriminator_optimizer, lr_scheduler, discriminator_lr_scheduler
         )

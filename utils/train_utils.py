@@ -30,10 +30,10 @@ from torch.utils.data import DataLoader
 from omegaconf import OmegaConf
 from torch.optim import AdamW
 from utils.lr_schedulers import get_scheduler
-from modeling.modules import EMAModel, ReconstructionLoss_Stage1, ReconstructionLoss_Stage2, ReconstructionLoss_Single_Stage
+from modeling.modules import EMAModel, ReconstructionLoss_Stage1, ReconstructionLoss_Stage2, ReconstructionLoss_Single_Stage,ReconstructionLoss_FSQ
 from modeling.titok import TiTok, PretrainedTokenizer
 # from modeling.tatitok import TATiTok
-from modeling.titok import TiTok3D
+from modeling.titok import TiTok3D,TiTok3D_FSQ
 from modeling.maskgit import ImageBert, UViTBert
 from evaluator.evaluator import VideoEvaluator
 from demo_util import get_titok_tokenizer, sample_fn
@@ -108,6 +108,9 @@ def create_model_and_loss_module(config, logger, accelerator,
     elif model_type == "titok3D":
         model_cls = TiTok3D
         loss_cls = ReconstructionLoss_Single_Stage 
+    elif model_type == "titok3DFSQ":
+        model_cls = TiTok3D_FSQ
+        loss_cls =  ReconstructionLoss_FSQ
     else:
         raise ValueError(f"Unsupported model_type {model_type}")
     model = model_cls(config)
@@ -158,7 +161,7 @@ def create_model_and_loss_module(config, logger, accelerator,
                 model_summary_str = summary(model, input_size=input_size, depth=5,
                 col_names=("input_size", "output_size", "num_params", "params_percent", "kernel_size", "mult_adds"))
                 logger.info(model_summary_str)
-        elif model_type in ["titok3D"]:
+        elif model_type in ["titok3D","titok3DFSQ"]:
             input_video_size  = (1, 3,config.dataset.preprocessing.temporal_size ,config.dataset.preprocessing.spatial_size, config.dataset.preprocessing.spatial_size)
             input_size = input_video_size
             if show_summary:
@@ -172,7 +175,7 @@ def create_model_and_loss_module(config, logger, accelerator,
 
 
 def create_optimizer(config, logger, model, loss_module,
-                     model_type="titok", need_discrminator=True):
+                     model_type="titok3D", need_discrminator=True):
     """Creates optimizer for TiTok and discrminator."""
     logger.info("Creating optimizers.")
     optimizer_config = config.optimizer.params
@@ -200,7 +203,7 @@ def create_optimizer(config, logger, model, loss_module,
         betas=(optimizer_config.beta1, optimizer_config.beta2)
     )
 
-    if (config.model.vq_model.finetune_decoder or model_type == "tatitok") and need_discrminator:
+    if (config.model.vq_model.finetune_decoder or model_type == "titok3D") and need_discrminator:
         discriminator_learning_rate = optimizer_config.discriminator_learning_rate
         discriminator_named_parameters = list(loss_module.named_parameters())
         discriminator_gain_or_bias_params = [p for n, p in discriminator_named_parameters if exclude(n, p) and p.requires_grad]
@@ -300,9 +303,7 @@ def create_dataloader(config, logger, accelerator):
 def create_evaluator(config, logger, accelerator):
     """Creates evaluator."""
     logger.info("Creating evaluator.")
-    if config.model.vq_model.get("quantize_mode", "vq") == "vq":
-        raise NotImplementedError
-    elif config.model.vq_model.get("quantize_mode", "vq") == "vae":
+    if config.model.vq_model.get("quantize_mode", "vq") == "vae" or config.model.vq_model.get("model_type","titok3D") == "titok3DFSQ":
         evaluator = VideoEvaluator(
             device=accelerator.device,
             enable_fvd=True,
@@ -313,7 +314,6 @@ def create_evaluator(config, logger, accelerator):
             need_channel_adjustment_is=config.eval.need_channel_adjustment_is,
             is_splits=config.eval.is_splits,
         )
-        
     else:
         raise NotImplementedError
     return evaluator
@@ -401,20 +401,19 @@ def train_one_epoch(config, logger, accelerator,
         with accelerator.accumulate([model, loss_module]):
             loss_module.to(accelerator.device)
             if model_type == "titok3D":
-                reconstructed_images, extra_results_dict = model(videos)
+                reconstructed_videos, extra_results_dict = model(videos)
                 if proxy_codes is None:
                     autoencoder_loss, loss_dict = loss_module(
                         videos,
-                        reconstructed_images,
+                        reconstructed_videos,
                         extra_results_dict,
                         global_step,
                         mode="generator",
                     )
                 else:
-                    
                     autoencoder_loss, loss_dict = loss_module(
                         proxy_codes,
-                        reconstructed_images,
+                        reconstructed_videos,
                         extra_results_dict
                     )    
             # elif model_type == "tatitok":
@@ -458,13 +457,15 @@ def train_one_epoch(config, logger, accelerator,
 
             optimizer.zero_grad(set_to_none=True)
 
-            # Train discriminator.
-            discriminator_logs = defaultdict(float)
-            if (config.model.vq_model.finetune_decoder or model_type == "tatitok") and accelerator.unwrap_model(loss_module).should_discriminator_be_trained(global_step):
+
+        # Train discriminator.
+        discriminator_logs = defaultdict(float)
+        if (config.model.vq_model.finetune_decoder or model_type in ["titok3DFSQ","titok3D"]) and accelerator.unwrap_model(loss_module).should_discriminator_be_trained(global_step):
+            with accelerator.accumulate(loss_module):
                 discriminator_logs = defaultdict(float)
                 discriminator_loss, loss_dict_discriminator = loss_module(
                     videos,
-                    reconstructed_images,
+                    reconstructed_videos,
                     extra_results_dict,
                     global_step=global_step,
                     mode="discriminator",
@@ -487,7 +488,7 @@ def train_one_epoch(config, logger, accelerator,
 
                 discriminator_optimizer.step()
                 discriminator_lr_scheduler.step()
-        
+            
                 # Log gradient norm before zeroing it.
                 if (
                     accelerator.sync_gradients
@@ -495,8 +496,9 @@ def train_one_epoch(config, logger, accelerator,
                     and accelerator.is_main_process
                 ):
                     log_grad_norm(loss_module, accelerator, global_step + 1)
-                
+
                 discriminator_optimizer.zero_grad(set_to_none=True)
+
 
         if accelerator.sync_gradients:
             if config.training.use_ema:

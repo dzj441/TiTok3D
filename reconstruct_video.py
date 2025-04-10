@@ -2,9 +2,9 @@ from utils.video_utils import load_and_preprocess_video,save_video_imageio
 from modeling.titok import TiTok3D
 import torch
 from omegaconf import OmegaConf
-videofrom = "/home2/jinluo/projects/TiTok3D/datasets/TOY/train/ApplyEyeMakeup/v_ApplyEyeMakeup_g13_c04.avi"
+videofrom = "/home2/jinluo/projects/TiTok3D/datasets/little/train/ApplyEyeMakeup/v_ApplyEyeMakeup_g13_c04.avi"
 tensorVid = load_and_preprocess_video(videofrom)
-tensorVid = tensorVid.to("cuda:0")
+tensorVid = tensorVid.to("cuda:1")
 print(tensorVid.shape)
 avi_path = "results/temp/origin/avi"
 mp4_path = "results/temp/origin/mp4"
@@ -18,12 +18,10 @@ model = TiTok3D.from_pretrained("/home2/jinluo/projects/TiTok3D/temp_weights")
 # 2. 加载权重
 
 # 3. 移动到 GPU
-model = model.to("cuda:0")
+model = model.to("cuda:1")
 model.eval()
 
 output,_ = model(tensorVid)
 avi_path = "results/temp/out/avi"
 mp4_path = "results/temp/out/mp4"
-
-print("dddd")
 save_video_imageio(output,avi_path,mp4_path)

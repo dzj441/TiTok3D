@@ -54,7 +54,7 @@ class VectorQuantizer(torch.nn.Module):
     def forward(self, z: torch.Tensor) -> Tuple[torch.Tensor, Mapping[Text, torch.Tensor]]:
         z = z.float()
         z = rearrange(z, 'b c h w -> b h w c').contiguous() # b,1,32,12
-        z_flattened = rearrange(z, 'b h w c -> (b h w) c')
+        z_flattened = rearrange(z, 'b h w c -> (b h w) c') # [b*1*32,12]
         unnormed_z_flattened = z_flattened
 
         if self.use_l2_norm:

@@ -5,8 +5,8 @@ experiment:
     output_dir: "titok3D_ll32_vae_toy_run1"
     max_train_examples: 685_800_000
     save_every: 5000
-    eval_every: 500
-    generate_every: 2000
+    eval_every: 5000
+    generate_every: 1000
     log_every: 50
     log_grad_norm_every: 1_00
     resume: True
@@ -15,7 +15,7 @@ experiment:
 model:
     vq_model:
         quantize_mode: "vae"
-        token_size: 16
+        token_size: 128
         vit_enc_model_size: "large"
         vit_dec_model_size: "large"
         vit_enc_spatial_patch_size: 16
@@ -32,11 +32,11 @@ losses:
     discriminator_factor: 1.0
     discriminator_weight: 0.0
     perceptual_loss: "lpips-convnext_s-1.0-0.1"
-    perceptual_weight: 0.0
+    perceptual_weight: 2.5
     reconstruction_loss: "l2"
-    reconstruction_weight: 10.0
+    reconstruction_weight: 1.0
     lecam_regularization_weight: 0.001
-    kl_weight: 0.0
+    kl_weight: 1e-3
     logvar_init: 0.0
 
 eval:
@@ -67,21 +67,21 @@ optimizer:
     name: adamw 
     params:
         learning_rate: 1e-3
-        discriminator_learning_rate: 1e-3
+        discriminator_learning_rate: 1e-4
         beta1: 0.9
         beta2: 0.999
-        weight_decay: 1e-3
+        weight_decay: 1e-4
 
 lr_scheduler:
     scheduler: "cosine"
     params:
         learning_rate: ${optimizer.params.learning_rate}
-        warmup_steps: 50_0
+        warmup_steps: 20_0
         end_lr: 1e-5
 
 training:
     gradient_accumulation_steps: 1
-    per_gpu_batch_size: 1
+    per_gpu_batch_size: 2
     mixed_precision: "fp16"
     enable_tf32: True
     enable_wandb: True

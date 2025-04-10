@@ -366,7 +366,6 @@ class TiTokDecoder(nn.Module):
         mask_tokens = mask_tokens + self.positional_embedding.to(mask_tokens.dtype) # PE
         x = x + self.latent_token_positional_embedding[:seq_len]
         x = torch.cat([mask_tokens, x], dim=1) # [b,1+ grid**2 + latent size]
-        
         x = self.ln_pre(x)
         x = x.permute(1, 0, 2)  # NLD -> LND
         for i in range(self.num_layers):
@@ -396,6 +395,8 @@ class TiTok3DEncoder(nn.Module):
         self.model_size = config.model.vq_model.vit_enc_model_size # large
         self.num_latent_tokens = config.model.vq_model.num_latent_tokens # 32
         self.token_size = config.model.vq_model.token_size # 12 code-book entry dim # for VAE 16 maybe to be compatible with VQ (1,12,1,32)
+        if self.config.model.vq_model.get("use_fsq",False):
+            self.token_size = len(self.config.model.vq_model.fsq_level)
 
         if config.model.vq_model.get("quantize_mode", "vq") == "vae":
             self.token_size = self.token_size * 2 # needs to split into mean and std for VAE
@@ -446,7 +447,7 @@ class TiTok3DEncoder(nn.Module):
 
     def forward(self, pixel_values, latent_tokens):
         batch_size = pixel_values.shape[0]
-        x = pixel_values
+        x = pixel_values # input of [b,3,16(T),128(H),128(H)] 
         x = self.patch_embed(x) # [b,1024,4,16,16]
         x = x.reshape(x.shape[0], x.shape[1], -1) # [b,1024,1024]
         x = x.permute(0, 2, 1) # shape = [b, tgrid*sgrid ** 2, width]
@@ -473,7 +474,7 @@ class TiTok3DEncoder(nn.Module):
         else:
             # Fix legacy problem.
             latent_tokens = latent_tokens.reshape(batch_size, self.num_latent_tokens, self.width, 1).permute(0, 2, 1, 3) # compatible issues switch to [b,1024,32,1]
-        latent_tokens = self.conv_out(latent_tokens) # [b,12,32,1] 
+        latent_tokens = self.conv_out(latent_tokens) # [b,12,32,1] for FSQ : [b,fsq_level,32,1]
         latent_tokens = latent_tokens.reshape(batch_size, self.token_size, 1, self.num_latent_tokens) # [b,12,1,32] #vae [b,32,1,32]
         return latent_tokens
     
@@ -494,6 +495,8 @@ class TiTok3DDecoder(nn.Module):
         self.model_size = config.model.vq_model.vit_dec_model_size # large
         self.num_latent_tokens = config.model.vq_model.num_latent_tokens # 32
         self.token_size = config.model.vq_model.token_size
+        if self.config.model.vq_model.get("use_fsq",False):
+            self.token_size = len(self.config.model.vq_model.fsq_level)
         self.is_legacy = config.model.vq_model.get("is_legacy", True)
         self.width = {
                 "small": 512,

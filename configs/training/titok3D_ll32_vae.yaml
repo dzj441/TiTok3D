@@ -6,14 +6,15 @@ experiment:
     max_train_examples: 685_800_000
     save_every: 50_00
     eval_every: 50_00
-    generate_every: 5_000
+    generate_every: 10_00
     log_every: 50
-    log_grad_norm_every: 1_000
+    log_grad_norm_every: 1_00
     resume: True
 
 model:
     vq_model:
         quantize_mode: "vae"
+        need_discriminator: True        
         token_size: 16
         vit_enc_model_size: "large"
         vit_dec_model_size: "large"
@@ -26,16 +27,16 @@ model:
         is_legacy: false
 
 losses:
-    discriminator_start: 200_000
+    discriminator_start: 20
     quantizer_weight: 1.0
     discriminator_factor: 1.0
     discriminator_weight: 0.1
     perceptual_loss: "lpips-convnext_s-1.0-0.1"
     perceptual_weight: 1.1
     reconstruction_loss: "l2"
-    reconstruction_weight: 2.0
+    reconstruction_weight: 1.0
     lecam_regularization_weight: 0.001
-    kl_weight: 1
+    kl_weight: 1e-6
     logvar_init: 0.0
 
 eval:
@@ -49,7 +50,7 @@ dataset:
         train_path: "datasets/UCF-101/train"
         eval_path: "datasets/UCF-101/test"
         train_list: "datasets/UCF-101/trainlist.txt"
-        eval_list: "datasets/UCF-101/testlist.txt"        
+        eval_list: "datasets/UCF-101/TestList100.txt"        
         fps: 16 
 
     loader:
@@ -89,3 +90,4 @@ training:
     max_train_steps: 650_000
     num_generated_videos: 1
     max_grad_norm: 1.0
+    epoch: 2000

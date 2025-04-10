@@ -181,5 +181,8 @@ wandb/
 dataset/coinrun
 results/
 *.pyc
-temp_weights/
+temp_*/
 datasets/
+titok3D_*/
+aaa_*/
+*.tar.gz
