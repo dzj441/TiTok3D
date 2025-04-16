@@ -1,8 +1,8 @@
 # modified from TA-TITOK
 experiment:
-    project: "titok3D_ll32_vae_little"
-    name: "titok3D_ll32_vae_little_run1"
-    output_dir: "titok3D_ll32_vae_little_run1"
+    project: "titok3D_ll32_vae_little_LONG128"
+    name: "titok3D_ll32_vae_little_run1_LONG128"
+    output_dir: "titok3D_ll32_vae_little_run1_LONG128"
     max_train_examples: 685_800_000
     save_every: 2000
     eval_every: 1000
@@ -15,15 +15,15 @@ experiment:
 model:
     vq_model:
         quantize_mode: "vae"
-        token_size: 64
-        need_discriminator: True  
+        need_discriminator: True
+        token_size: 16
         vit_enc_model_size: "large"
         vit_dec_model_size: "large"
         vit_enc_spatial_patch_size: 16
         vit_enc_temporal_patch_size: 4
         vit_dec_spatial_patch_size: 16
         vit_dec_temporal_patch_size: 4
-        num_latent_tokens: 32
+        num_latent_tokens: 128
         finetune_decoder: false
         is_legacy: false
 
@@ -31,7 +31,7 @@ losses:
     discriminator_start: 50
     quantizer_weight: 1.0
     discriminator_factor: 1.0
-    discriminator_weight: 0.0
+    discriminator_weight: 0.1
     perceptual_loss: "lpips-convnext_s-1.0-0.1"
     perceptual_weight: 1.1
     reconstruction_loss: "l2"
@@ -78,7 +78,7 @@ lr_scheduler:
     params:
         learning_rate: ${optimizer.params.learning_rate}
         warmup_steps: 20
-        end_lr: 1e-5
+        end_lr: 1e-4
 
 training:
     gradient_accumulation_steps: 1
@@ -91,4 +91,4 @@ training:
     max_train_steps: 650_000
     num_generated_videos: 1
     max_grad_norm: 1.0
-    epoch: 2100    
+    epoch: 10010    
