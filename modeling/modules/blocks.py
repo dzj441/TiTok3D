@@ -26,6 +26,7 @@ from torch.utils.checkpoint import checkpoint
 from collections import OrderedDict
 import einops
 from einops.layers.torch import Rearrange
+from einops import rearrange
 
 
 def modulate(x, shift, scale):
@@ -71,6 +72,140 @@ class ResidualAttentionBlock(nn.Module):
         if self.mlp_ratio > 0:
             x = x + self.mlp(self.ln_2(x))
         return x
+
+class ResidualSpatialTemporalAttnBlock(nn.Module):
+    def __init__(
+        self,
+        d_model,
+        n_head,
+        mlp_ratio=4.0,
+        drop_path=0.0,
+        act_layer=nn.GELU,
+        norm_layer=nn.LayerNorm
+    ):
+        super().__init__()
+        # 1) Temporal Attention
+        self.ln_temporal = norm_layer(d_model)
+        self.temporal_attn = nn.MultiheadAttention(d_model, n_head)
+        self.temporal_fc   = nn.Linear(d_model, d_model)
+        # 2) Spatial Attention
+        self.ln_spatial = norm_layer(d_model)
+        self.spatial_attn = nn.MultiheadAttention(d_model, n_head)
+        # 3) FFN
+        self.ln_mlp = norm_layer(d_model)
+        hidden_dim = int(d_model * mlp_ratio)
+        self.mlp    = nn.Sequential(
+            nn.Linear(d_model, hidden_dim),
+            act_layer(),
+            nn.Linear(hidden_dim, d_model)
+        )
+        # 4) DropPath (set drop_path to 0 to disable)
+        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+
+    def forward(self, x, T, H, W):
+        """
+        x: Tensor[L, B, C],  L = 1 + H*W*T + R: Register tokens
+        T,H,W:  time,height,width
+        """
+        B, C = x.size(1), x.size(2)
+        total_tokens = x.size(0)
+        R = total_tokens - 1 - H*W*T  # R
+
+        # ———————— Temporal  ————————
+        cls  = x[0:1]                          # [1, B, C]
+        toks = x[1:1+H*W*T]                   # [H*W*T, B, C]
+        regs = x[1+H*W*T:]                    # [R, B, C]
+
+        # 1) reshape to [B*H*W,t,c]
+        toks_t = rearrange(toks, '(t h w) b c -> t (b h w) c',
+                           b=B, h=H, w=W, t=T)  # [T, BHW, C]
+        cls_rep = cls.repeat(1, H*W, 1)         # [1, BHW, C]
+        regs_rep = regs.repeat(1, H*W, 1)       # [R, BHW, C]
+
+        # 2) Multi‑head Attention
+        seq_t = torch.cat([cls_rep, toks_t, regs_rep], dim=0)  # [1+T+R, BHW, C]
+        seq_t_norm = self.ln_temporal(seq_t)
+        out = self.temporal_attn(self.ln_temporal(seq_t_norm),
+                                 self.ln_temporal(seq_t_norm),
+                                 self.ln_temporal(seq_t_norm),
+                                 need_weights=False)[0]
+
+        # 3) divide to <cls> <token> <reg>
+        cls_out_rep  = out[0:1]            # [1, BHW, C]
+        toks_out_t   = out[1:1+T]          # [T, BHW, C]
+        regs_out_rep = out[1+T:]           # [R, BHW, C]
+
+        # 4) residual tokens
+        toks_out = rearrange(toks_out_t, 't (b h w) c -> (t h w) b c',
+                             b=B, h=H, w=W, t=T)  # [HWT, B, C]
+        toks = toks + self.drop_path(self.temporal_fc(toks_out))
+
+        #   cls token:    mean on HW to  [1, B, C]
+        cls_out = rearrange(cls_out_rep, '1 (b h w) c -> b (h w) c',
+                            b=B, h=H, w=W)
+        cls_out = cls_out.mean(dim=1, keepdim=True)      # [B,1,C]
+        cls_out = rearrange(cls_out, 'b 1 c -> 1 b c')      # [1,B,C]
+        cls = cls + self.drop_path(cls_out)
+
+        #   register tokens: mean on H×W to [R, B, C]
+        regs_out = rearrange(regs_out_rep, 'r (b h w) c -> r b (h w) c',
+                             b=B, h=H, w=W)
+        regs_out = regs_out.mean(dim=2)                  # [R,B,C]
+        regs = regs + self.drop_path(regs_out)
+
+        # reshape to [1+HWT+R,B,C] maybe used latter
+        x = torch.cat([cls, toks, regs], dim=0)  # [1+HWT+R, B, C]
+
+
+        # ———————— Spatial  ————————
+        # redivide
+        cls  = x[0:1]                   
+        toks = x[1:1+H*W*T]            
+        regs = x[1+H*W*T:]            
+
+        # 1) reshape to [hw,bt,C]
+        toks_s = rearrange(toks,'(t h w) b c -> (h w) (b t) c',
+            b=B, h=H, w=W, t=T
+        )  # [H*W, B*T, C]
+        cls_rep_s = cls.repeat(1, T, 1)             # [1, B*T, C]
+        regs_rep_s = regs.repeat(1, T, 1)           # [R, B*T, C]
+
+        # 2) Multi‑head Attention
+        seq_s = torch.cat([cls_rep_s, toks_s, regs_rep_s], dim=0)  # [1+H*W+R, B*T, C]
+        seq_s_norm = self.ln_spatial(seq_s)
+        out_s = self.spatial_attn(self.ln_spatial(seq_s_norm),
+                                  self.ln_spatial(seq_s_norm),
+                                  self.ln_spatial(seq_s_norm),
+                                  need_weights=False)[0]
+
+        # 3) divide
+        cls_out_s   = out_s[0:1]              # [1, B*T, C]
+        toks_out_s  = out_s[1:1+H*W]          # [H*W, B*T, C]
+        regs_out_s  = out_s[1+H*W:]           # [R,   B*T, C]
+
+        # 4) residual
+        #   tokens
+        toks_rec = rearrange(toks_out_s, '(h w) (b t) c -> (t h w) b c',
+                             b=B, h=H, w=W, t=T)  # [HWT, B, C]
+        toks = toks + self.drop_path(toks_rec)
+
+        #   cls: mean on t to [1, B, C]
+        cls_tmp = rearrange(cls_out_s, '1 (b t) c -> b t c', b=B, t=T)
+        cls_tmp = cls_tmp.mean(dim=1, keepdim=True)   # [B,1,C]
+        cls_tmp = rearrange(cls_tmp, 'b 1 c -> 1 b c')
+        cls = cls + self.drop_path(cls_tmp)
+
+        #   regs: mean on t to [R, B, C]
+        regs_tmp = rearrange(regs_out_s, 'r (b t) c -> r b t c', b=B, t=T)
+        regs_tmp = regs_tmp.mean(dim=2)               # [R, B, C]
+        regs = regs + self.drop_path(regs_tmp)
+
+        # concatenate and  FFN
+        x = torch.cat([cls, toks, regs], dim=0)      # [1+HWT+R, B, C]
+        x = x + self.drop_path(self.mlp(self.ln_mlp(x)))
+
+        return x
+
 
 if hasattr(torch.nn.functional, 'scaled_dot_product_attention'):
     ATTENTION_MODE = 'flash'
@@ -419,10 +554,6 @@ class TiTok3DEncoder(nn.Module):
                 "large": 16,
             }[self.model_size] # 16 
         
-        # self.patch_embed = nn.Conv2d(
-        #     in_channels=3, out_channels=self.width,
-        #       kernel_size=self.spaital_patch_size, stride=self.spaital_patch_size, bias=True) # (b,width,grid,grid) one grid is a patch
-        
         # modified to 3D conv
         self.patch_embed = nn.Conv3d(
             in_channels=3, out_channels=self.width,
@@ -567,6 +698,199 @@ class TiTok3DDecoder(nn.Module):
         x = x.permute(1, 0, 2)  # NLD -> LND
         for i in range(self.num_layers):
             x = self.transformer[i](x)
+        x = x.permute(1, 0, 2)  # LND -> NLD
+        x = x[:, 1:1+self.temporal_grid_size*self.spatial_grid_size**2] # remove cls embed and also latent part
+        x = self.ln_post(x)
+        # N L D -> N D H W
+        x = x.permute(0, 2, 1).reshape(batchsize, self.width,self.temporal_grid_size ,self.spatial_grid_size, self.spatial_grid_size) # [b,1024,tgrid,sgrid,sgrid]
+        x = self.ffn(x.contiguous()) # no shape change b,w,grid,grid for vq ; for VAE will directly remap back to image shape [b,3.256,256]
+        x = self.conv_out(x)
+        return x # [b,w,grid,grid]
+
+
+class TiTok3DSpatialTemporalEncoder(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.image_size = config.dataset.preprocessing.spatial_size # 256
+        self.video_length = config.dataset.preprocessing.temporal_size # 16
+        self.spatial_patch_size = config.model.vq_model.vit_enc_spatial_patch_size # 16
+        self.temporal_patch_size = config.model.vq_model.vit_enc_temporal_patch_size # 4
+
+        self.temporal_grid_size = self.video_length // self.temporal_patch_size # 4
+        self.spatial_grid_size = self.image_size // self.spatial_patch_size # 16
+
+        self.model_size = config.model.vq_model.vit_enc_model_size # large
+        self.num_latent_tokens = config.model.vq_model.num_latent_tokens # 32
+        self.token_size = config.model.vq_model.token_size # 12 code-book entry dim # for VAE 16 maybe to be compatible with VQ (1,12,1,32)
+        if self.config.model.vq_model.get("use_fsq",False):
+            self.token_size = len(self.config.model.vq_model.fsq_level)
+
+        if config.model.vq_model.get("quantize_mode", "vq") == "vae":
+            self.token_size = self.token_size * 2 # needs to split into mean and std for VAE
+
+        self.is_legacy = config.model.vq_model.get("is_legacy", True) # default is legacy
+
+        self.width = {
+                "small": 512,
+                "base": 768,
+                "large": 1024,
+            }[self.model_size] #1024
+        self.num_layers = {
+                "small": 4,
+                "base": 6,
+                "large": 12,
+            }[self.model_size] # 12 * (temporal+spatial)
+        self.num_heads = {
+                "small": 8,
+                "base": 12,
+                "large": 16,
+            }[self.model_size] # 16 
+        
+        # modified to 3D conv
+        self.patch_embed = nn.Conv3d(
+            in_channels=3, out_channels=self.width,
+              kernel_size=(self.temporal_patch_size,self.spatial_patch_size, self.spatial_patch_size), 
+              stride=(self.temporal_patch_size,self.spatial_patch_size, self.spatial_patch_size),
+              bias=True) # (b,width,tgrid,sgrid,sgrid) one grid is a patch
+                
+        scale = self.width ** -0.5 # 1/32
+        self.class_embedding = nn.Parameter(scale * torch.randn(1, self.width)) # [1,embedding_dim]
+        self.positional_embedding = nn.Parameter(
+                scale * torch.randn(self.temporal_grid_size*self.spatial_grid_size ** 2 + 1, self.width)) # [16*16+1,embedding_dim]  for the encoded image latent additional 1 for cls embed
+        self.latent_token_positional_embedding = nn.Parameter(
+            scale * torch.randn(self.num_latent_tokens, self.width)) # [latent_dim,embedding_dim]
+        self.ln_pre = nn.LayerNorm(self.width)
+        self.transformer = nn.ModuleList()
+        for i in range(self.num_layers): # 24 Attn
+            self.transformer.append(ResidualSpatialTemporalAttnBlock(
+                self.width, self.num_heads, mlp_ratio=4.0
+            ))
+        self.ln_post = nn.LayerNorm(self.width) # 1024
+        self.conv_out = nn.Conv2d(self.width, self.token_size, kernel_size=1, bias=True) # linear won't function for batch,width,latent_num,1 USE CONV2D to adjust channels instead
+
+    def forward(self, pixel_values, latent_tokens):
+        batch_size = pixel_values.shape[0]
+        x = pixel_values # input of [b,3,16(T),128(H),128(H)] 
+        x = self.patch_embed(x) # [b,1024,4,16,16]
+        x = x.reshape(x.shape[0], x.shape[1], -1) # [b,1024,1024]
+        x = x.permute(0, 2, 1) # shape = [b, tgrid*sgrid ** 2, width]
+        # class embeddings and positional embeddings
+        x = torch.cat([_expand_token(self.class_embedding, x.shape[0]).to(x.dtype), x], dim=1) # add cls embedding expand on batch dim
+        x = x + self.positional_embedding.to(x.dtype) # shape = [b, tgrid*sgrid ** 2 + 1, width]
+        # add pe for original <cls>+<img>
+
+        latent_tokens = _expand_token(latent_tokens, x.shape[0]).to(x.dtype) # expand on batch dim
+        latent_tokens = latent_tokens + self.latent_token_positional_embedding.to(x.dtype)
+        x = torch.cat([x, latent_tokens], dim=1) # <cls> <img> <latent>
+        
+        x = self.ln_pre(x) # batch,length,dim
+        x = x.permute(1, 0, 2)  # NLD -> LND
+        for i in range(self.num_layers):
+            x = self.transformer[i](x,T=self.temporal_grid_size,H=self.spatial_grid_size,W=self.spatial_grid_size) # for attn
+        x = x.permute(1, 0, 2)  # LND -> NLD
+        
+        latent_tokens = x[:, 1+self.temporal_grid_size*self.spatial_grid_size**2:] # extract the latent parts
+        latent_tokens = self.ln_post(latent_tokens)
+        # fake 2D shape
+        if self.is_legacy:
+            latent_tokens = latent_tokens.reshape(batch_size, self.width, self.num_latent_tokens, 1) # [b,1024,32,1]
+        else:
+            # Fix legacy problem.
+            latent_tokens = latent_tokens.reshape(batch_size, self.num_latent_tokens, self.width, 1).permute(0, 2, 1, 3) # compatible issues switch to [b,1024,32,1]
+        latent_tokens = self.conv_out(latent_tokens) # [b,12,32,1] for FSQ : [b,fsq_level,32,1]
+        latent_tokens = latent_tokens.reshape(batch_size, self.token_size, 1, self.num_latent_tokens) # [b,12,1,32] #vae [b,32,1,32]
+        return latent_tokens
+    
+
+class TiTok3DSpatialTemporalDecoder(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.image_size = config.dataset.preprocessing.spatial_size # 256
+        self.video_length = config.dataset.preprocessing.temporal_size # 16
+
+        self.spatial_patch_size = config.model.vq_model.vit_enc_spatial_patch_size # 16
+        self.temporal_patch_size = config.model.vq_model.vit_enc_temporal_patch_size # 4
+
+        self.temporal_grid_size = self.video_length // self.temporal_patch_size # 4
+        self.spatial_grid_size = self.image_size // self.spatial_patch_size # 16
+        
+        self.model_size = config.model.vq_model.vit_dec_model_size # large
+        self.num_latent_tokens = config.model.vq_model.num_latent_tokens # 32
+        self.token_size = config.model.vq_model.token_size
+        if self.config.model.vq_model.get("use_fsq",False):
+            self.token_size = len(self.config.model.vq_model.fsq_level)
+        self.is_legacy = config.model.vq_model.get("is_legacy", True)
+        self.width = {
+                "small": 512,
+                "base": 768,
+                "large": 1024,
+            }[self.model_size]
+        self.num_layers = {
+                "small": 4,
+                "base": 6,
+                "large": 12,
+            }[self.model_size]
+        self.num_heads = {
+                "small": 8,
+                "base": 12,
+                "large": 16,
+            }[self.model_size]
+
+        self.decoder_embed = nn.Linear(
+            self.token_size, self.width, bias=True) # from token_size  12 to width 1024
+        scale = self.width ** -0.5
+        self.class_embedding = nn.Parameter(scale * torch.randn(1, self.width))
+        self.positional_embedding = nn.Parameter(
+                scale * torch.randn(self.temporal_grid_size*self.spatial_grid_size ** 2 + 1, self.width))
+        # add mask token and query pos embed
+        self.mask_token = nn.Parameter(scale * torch.randn(1, 1, self.width)) # [1,1,1024]
+        self.latent_token_positional_embedding = nn.Parameter(
+            scale * torch.randn(self.num_latent_tokens, self.width)) # [32,1024]
+        self.ln_pre = nn.LayerNorm(self.width)
+        self.transformer = nn.ModuleList()
+        for i in range(self.num_layers):
+            self.transformer.append(ResidualSpatialTemporalAttnBlock(
+                self.width, self.num_heads, mlp_ratio=4.0
+            ))
+        self.ln_post = nn.LayerNorm(self.width)
+
+        # modification
+        if self.is_legacy:
+            self.ffn = nn.Sequential(
+                nn.Conv2d(self.width, 2 * self.width, 1, padding=0, bias=True),
+                nn.Tanh(),
+                nn.Conv2d(2 * self.width, 1024, 1, padding=0, bias=True), # here 1024 is hard coded due to legacy in TiTok. won't fall into this branch
+            )
+            self.conv_out = nn.Identity()
+        else:
+            # Directly predicting RGB pixels
+            self.ffn = nn.Sequential(
+                nn.Conv3d(self.width, self.temporal_patch_size*self.spatial_patch_size * self.spatial_patch_size * 3, 1, padding=0, bias=True), # directly conv towards img pixels num
+                Rearrange('b (tp p1 p2 c) t h w -> b c (t tp) (h p1) (w p2)',
+                    tp = self.temporal_patch_size ,p1 = self.spatial_patch_size, p2 = self.spatial_patch_size),)
+            self.conv_out = nn.Conv3d(3, 3, 3, padding=1, bias=True)
+    
+    def forward(self, z_quantized):
+        N, C, H, W = z_quantized.shape # 1,12,1,32 for VAE 1,16,1,32
+        assert H == 1 and W == self.num_latent_tokens, f"{H}, {W}, {self.num_latent_tokens}"
+        x = z_quantized.reshape(N, C*H, W).permute(0, 2, 1) # NLD [batch,ls,ld] for VAE 1,16,32 -> 1,32,16
+        x = self.decoder_embed(x) # linear (from latent dim 16) to self.width(1024) 
+
+        batchsize, seq_len, _ = x.shape
+
+        mask_tokens = self.mask_token.repeat(batchsize, self.temporal_grid_size*self.spatial_grid_size**2, 1).to(x.dtype) #[b,grid^2,mask_dim] <MASK>
+        mask_tokens = torch.cat([_expand_token(self.class_embedding, mask_tokens.shape[0]).to(mask_tokens.dtype),
+                                    mask_tokens], dim=1) # [cls, <Mask>*256]
+        mask_tokens = mask_tokens + self.positional_embedding.to(mask_tokens.dtype) # PE
+        x = x + self.latent_token_positional_embedding[:seq_len]
+        x = torch.cat([mask_tokens, x], dim=1) # [b,1+ grid**2 + latent size]
+        
+        x = self.ln_pre(x)
+        x = x.permute(1, 0, 2)  # NLD -> LND
+        for i in range(self.num_layers):
+            x = self.transformer[i](x,T=self.temporal_grid_size,H=self.spatial_grid_size,W=self.spatial_grid_size) # for attn
         x = x.permute(1, 0, 2)  # LND -> NLD
         x = x[:, 1:1+self.temporal_grid_size*self.spatial_grid_size**2] # remove cls embed and also latent part
         x = self.ln_post(x)
