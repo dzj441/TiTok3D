@@ -21,9 +21,9 @@ import pytorch_lightning as pl
 from transformers import BertTokenizer
 
 from .video_utils import VideoNorm, load_video_from_path_decord, load_video_from_path_tvio, VideoRandomSquareCrop
-from .coinrun.coinrun_data import CoinRunDataset
-from .coinrun.coinrun_data_v2 import CoinRunDatasetV2
-from .coinrun.tokenizer import tokenizer
+# from .coinrun.coinrun_data import CoinRunDataset
+# from .coinrun.coinrun_data_v2 import CoinRunDatasetV2
+# from .coinrun.tokenizer import tokenizer
 from imagenet_stubs.imagenet_2012_labels import label_to_name
 
 try:

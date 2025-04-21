@@ -55,7 +55,7 @@ dataset:
         fps: 16 
 
     loader:
-        num_workers: 32
+        num_workers: 0
         pin_memory: True
         shuffle: True
         drop_last: False

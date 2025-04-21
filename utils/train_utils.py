@@ -542,11 +542,11 @@ def train_one_epoch(config, logger, accelerator,
                 data_time_meter.reset()
 
             # Save model checkpoint.
-            if (global_step + 1) % config.experiment.save_every == 0:
+            if (global_step + 1) % config.experiment.save_every == 0 and accelerator.is_main_process:
                 save_path = save_checkpoint(
                     model, config.experiment.output_dir, accelerator, global_step + 1, logger=logger)
                 # Wait for everyone to save their checkpoint.
-                accelerator.wait_for_everyone()
+                # accelerator.wait_for_everyone()
 
             # Generate images.
             if (global_step + 1) % config.experiment.generate_every == 0 and accelerator.is_main_process:
