@@ -33,7 +33,7 @@ from utils.lr_schedulers import get_scheduler
 from modeling.modules import EMAModel, ReconstructionLoss_Stage1, ReconstructionLoss_Stage2, ReconstructionLoss_Single_Stage,ReconstructionLoss_FSQ
 from modeling.titok import TiTok, PretrainedTokenizer
 # from modeling.tatitok import TATiTok
-from modeling.titok import TiTok3D,TiTok3D_FSQ
+from modeling.titok import TiTok3D,TiTok3D_FSQ,TiTok3DSpatialTemporal
 from modeling.maskgit import ImageBert, UViTBert
 from evaluator.evaluator import VideoEvaluator
 from demo_util import get_titok_tokenizer, sample_fn
@@ -111,6 +111,9 @@ def create_model_and_loss_module(config, logger, accelerator,
     elif model_type == "titok3DFSQ":
         model_cls = TiTok3D_FSQ
         loss_cls =  ReconstructionLoss_FSQ
+    elif model_type == "TiTok3DST":
+        model_cls = TiTok3DSpatialTemporal
+        loss_cls = ReconstructionLoss_Single_Stage
     else:
         raise ValueError(f"Unsupported model_type {model_type}")
     model = model_cls(config)
@@ -161,7 +164,7 @@ def create_model_and_loss_module(config, logger, accelerator,
                 model_summary_str = summary(model, input_size=input_size, depth=5,
                 col_names=("input_size", "output_size", "num_params", "params_percent", "kernel_size", "mult_adds"))
                 logger.info(model_summary_str)
-        elif model_type in ["titok3D","titok3DFSQ"]:
+        elif model_type in ["titok3D","titok3DFSQ","TiTok3DST"]:
             input_video_size  = (1, 3,config.dataset.preprocessing.temporal_size ,config.dataset.preprocessing.spatial_size, config.dataset.preprocessing.spatial_size)
             input_size = input_video_size
             if show_summary:
@@ -203,7 +206,7 @@ def create_optimizer(config, logger, model, loss_module,
         betas=(optimizer_config.beta1, optimizer_config.beta2)
     )
 
-    if (config.model.vq_model.finetune_decoder or model_type == "titok3D") and need_discrminator:
+    if (config.model.vq_model.finetune_decoder or model_type in ["titok3D","TiTok3DST"]) and need_discrminator:
         discriminator_learning_rate = optimizer_config.discriminator_learning_rate
         discriminator_named_parameters = list(loss_module.named_parameters())
         discriminator_gain_or_bias_params = [p for n, p in discriminator_named_parameters if exclude(n, p) and p.requires_grad]
@@ -400,7 +403,7 @@ def train_one_epoch(config, logger, accelerator,
 
         with accelerator.accumulate([model, loss_module]):
             loss_module.to(accelerator.device)
-            if model_type == "titok3D":
+            if model_type in ["titok3D","TiTok3DST"]:
                 reconstructed_videos, extra_results_dict = model(videos)
                 if proxy_codes is None:
                     autoencoder_loss, loss_dict = loss_module(
@@ -460,7 +463,7 @@ def train_one_epoch(config, logger, accelerator,
 
         # Train discriminator.
         discriminator_logs = defaultdict(float)
-        if (config.model.vq_model.finetune_decoder or model_type in ["titok3DFSQ","titok3D"]) and accelerator.unwrap_model(loss_module).should_discriminator_be_trained(global_step):
+        if (config.model.vq_model.finetune_decoder or model_type in ["titok3DFSQ","titok3D","TiTok3DST"]) and accelerator.unwrap_model(loss_module).should_discriminator_be_trained(global_step):
             with accelerator.accumulate(loss_module):
                 discriminator_logs = defaultdict(float)
                 discriminator_loss, loss_dict_discriminator = loss_module(
@@ -998,7 +1001,7 @@ def eval_reconstruction(
         #     text_guidance = clip_encoder.ln_final(text_guidance)  # [batch_size, n_ctx, transformer.width]
 
         original_videos = torch.clone(videos)
-        if model_type == "titok3D":
+        if model_type in ["titok3D","TiTok3DST"]:
             reconstructed_videos, model_dict = local_model(videos)
         # elif model_type == "tatitok":
         #     reconstructed_videos, model_dict = local_model(videos, text_guidance)
@@ -1087,7 +1090,7 @@ def reconstruct_videos(model, original_videos, accelerator,
     with torch.autocast("cuda", dtype=dtype, enabled=accelerator.mixed_precision != "no"):
         enc_tokens, encoder_dict = accelerator.unwrap_model(model).encode(original_videos)
     
-    if model_type == "titok3D":
+    if model_type in ["titok3D","TiTok3DST"]:
         reconstructed_videos = accelerator.unwrap_model(model).decode(enc_tokens)
     # elif model_type == "tatitok":
     #     reconstructed_images = accelerator.unwrap_model(model).decode(enc_tokens, text_guidance)

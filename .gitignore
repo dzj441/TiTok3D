@@ -187,3 +187,4 @@ titok3D_*/
 aaa_*/
 *.tar.gz
 past_experiments/
+slurm_output/

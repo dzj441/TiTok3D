@@ -1,22 +1,23 @@
 # modified from TA-TITOK
 experiment:
-    project: "titok3D_ll32_littlefsq20k"
-    name: "titok3D_ll32_littlefsq20krun1"
-    output_dir: "titok3D_ll32_littlefsq20krun1"
+    project: "titok3D_ll32_vae_little_st_long"
+    name: "titok3D_ll32_vae_little_st_long_run1"
+    output_dir: "titok3D_ll32_vae_little_st_long_run1"
     max_train_examples: 685_800_000
-    save_every: 10000
+    save_every: 2000
     eval_every: 1000
-    generate_every: 1000
-    log_every: 100
-    log_grad_norm_every: 1000
+    generate_every: 100
+    log_every: 50
+    log_grad_norm_every: 50
     resume: True
+
 
 model:
     vq_model:
-        quantize_mode: "vq"
-        model_type: "titok3DFSQ"
+        quantize_mode: "vae"
+        model_type: "TiTok3DST"
         need_discriminator: True
-        token_size: 5
+        token_size: 16
         vit_enc_model_size: "large"
         vit_dec_model_size: "large"
         vit_enc_spatial_patch_size: 16
@@ -26,11 +27,9 @@ model:
         num_latent_tokens: 32
         finetune_decoder: false
         is_legacy: false
-        use_fsq: True
-        fsq_level: [8,8,5,5,5]
 
 losses:
-    discriminator_start: 6003
+    discriminator_start: 3366
     quantizer_weight: 1.0
     discriminator_factor: 1.0
     discriminator_weight: 0.1
@@ -52,12 +51,12 @@ dataset:
     params:
         train_path: "datasets/little/train"
         eval_path: "datasets/little/test"
-        train_list: "datasets/little/ToyTrainList.txt"
-        eval_list: "datasets/little/ToyTestList.txt"        
+        train_list: "datasets/little/trainList.txt"
+        eval_list: "datasets/little/testList.txt"        
         fps: 16 
 
     loader:
-        num_workers: 32
+        num_workers: 0
         pin_memory: True
         shuffle: True
         drop_last: False
@@ -69,18 +68,18 @@ dataset:
 optimizer:
     name: adamw 
     params:
-        learning_rate: 1e-4
-        discriminator_learning_rate: 1e-4
+        learning_rate: 1e-5
+        discriminator_learning_rate: 1e-5
         beta1: 0.9
         beta2: 0.999
-        weight_decay: 1e-4
+        weight_decay: 1e-5
 
 lr_scheduler:
     scheduler: "cosine"
     params:
         learning_rate: ${optimizer.params.learning_rate}
-        warmup_steps: 200
-        end_lr: 1e-5
+        warmup_steps: 101
+        end_lr: 1e-6
 
 training:
     gradient_accumulation_steps: 1
@@ -90,7 +89,7 @@ training:
     enable_wandb: True
     use_ema: True
     seed: 42
-    max_train_steps: 650_00000
+    max_train_steps: 650_000
     num_generated_videos: 1
     max_grad_norm: 1.0
-    epoch: 20010
+    epoch: 20100    
