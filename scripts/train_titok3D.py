@@ -133,10 +133,10 @@ def main():
     if config.training.use_ema:
         ema_model.to(accelerator.device)
 
-    total_batch_size_without_accum = config.training.per_gpu_batch_size * accelerator.num_processes # 2
+    total_batch_size_without_accum = config.training.per_gpu_batch_size * accelerator.num_processes # 8
     num_batches = math.ceil(
-        config.experiment.max_train_examples / total_batch_size_without_accum) # 685 800 000/2
-    num_update_steps_per_epoch = math.ceil(num_batches / config.training.gradient_accumulation_steps) # 342 400 000
+        config.experiment.max_train_examples / total_batch_size_without_accum) # 13000/8=1625 batch per epoch
+    num_update_steps_per_epoch = math.ceil(num_batches / config.training.gradient_accumulation_steps) # 1625 updates per epoch
     num_train_epochs = math.ceil(config.training.max_train_steps / num_update_steps_per_epoch) # 650000/ 342 400 000
 
     # Start training.
@@ -157,10 +157,11 @@ def main():
     global_step, first_epoch = auto_resume(
         config, logger, accelerator, ema_model, num_update_steps_per_epoch,
         strict=True)
-
+    logger.info(f"global_step:{global_step} ,first_epoch: {first_epoch}")
     if config.training.get("epoch",0) != 0:
         num_train_epochs =  config.training.get("epoch")
-           
+    logger.info(f"global_step:{global_step} ,first_epoch: {first_epoch},num_train_epochs:{num_train_epochs}")
+    first_epoch = math.ceil(first_epoch/accelerator.num_processes)
     for current_epoch in range(first_epoch, num_train_epochs):
         accelerator.print(f"Epoch {current_epoch}/{num_train_epochs-1} started.")
         global_step = train_one_epoch(config, logger, accelerator,

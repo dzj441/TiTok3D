@@ -327,3 +327,100 @@ class VideoEvaluator():
             eval_score["InceptionScore_std"] = is_std
 
         return eval_score
+
+
+# class VideoEvaluator():
+#     def __init__(
+#         self,
+#         device,
+#         buffer_size: int = 256,
+#         enable_fvd: bool = True,
+#         enable_inception_score: bool = True,
+#         clip_time_stamp: int = 16,
+#         fvd_method: str = 'styleganv',
+#         need_channel_adjustment_fvd: bool = False,
+#         need_channel_adjustment_is: bool = True,
+#         is_splits: int = 1
+#     ):
+#         self._device = device
+#         self._enable_fvd = enable_fvd
+#         self._enable_inception_score = enable_inception_score
+#         self._clip_time_stamp = clip_time_stamp
+#         self._fvd_method = fvd_method
+#         self._need_channel_adjustment_fvd = need_channel_adjustment_fvd
+#         self._need_channel_adjustment_is = need_channel_adjustment_is
+#         self._is_splits = is_splits
+
+#         self.buffer_size = buffer_size
+#         self._real_buffer = []
+#         self._fake_buffer = []
+#         self._fvd_scores = []
+#         self._is_means = []
+#         self._is_stds = []
+
+#     def reset_metrics(self):
+#         self._real_buffer.clear()
+#         self._fake_buffer.clear()
+#         self._fvd_scores.clear()
+#         self._is_means.clear()
+#         self._is_stds.clear()
+
+#     def update(self, real_videos: torch.Tensor, fake_videos: torch.Tensor):
+#         # 1) 先像原来一样拉到 CPU 并缓存
+#         real_videos = real_videos.detach().cpu()
+#         fake_videos = fake_videos.detach().cpu()
+#         self._real_buffer.append(real_videos)
+#         self._fake_buffer.append(fake_videos)
+
+#         # 2) 如果达到了 buffer_size，flush 一次
+#         total = sum(b.shape[0] for b in self._real_buffer)
+#         if total >= self.buffer_size:
+#             self._flush_batch()
+
+#     def _flush_batch(self):
+#         real_batch = torch.cat(self._real_buffer, dim=0).to(self._device).contiguous()
+#         fake_batch = torch.cat(self._fake_buffer, dim=0).to(self._device).contiguous()
+#         # 调用你已有的 FVD 计算
+#         if self._enable_fvd:
+#             fvd_res = calculate_fvd_given_timestamp(
+#                 real_batch,
+#                 fake_batch,
+#                 device=self._device,
+#                 clip_time_stamp=self._clip_time_stamp,
+#                 method=self._fvd_method,
+#                 need_channel_adjustment=self._need_channel_adjustment_fvd
+#             )
+#             self._fvd_scores.append(fvd_res["value"])
+#         # 调用你已有的 IS 计算
+#         if self._enable_inception_score:
+#             is_mean, is_std = calculate_is(
+#                 fake_batch,
+#                 device=self._device,
+#                 splits=self._is_splits,
+#                 needs_channel_adjustment=self._need_channel_adjustment_is
+#             )
+#             self._is_means.append(is_mean)
+#             self._is_stds.append(is_std)
+
+#         # 清空缓存，释放内存
+#         self._real_buffer.clear()
+#         self._fake_buffer.clear()
+
+#     def result(self) -> Mapping[Text, torch.Tensor]:
+#         # 把剩下不到 buffer_size 的也算一次
+#         if len(self._real_buffer) > 0:
+#             self._flush_batch()
+
+#         if not self._fvd_scores and not self._is_means:
+#             raise ValueError("No examples to evaluate.")
+
+#         eval_score = {}
+#         if self._enable_fvd:
+#             # 简单算术平均
+#             eval_score["FVD"] = sum(self._fvd_scores) / len(self._fvd_scores)
+#         if self._enable_inception_score:
+#             eval_score["InceptionScore_mean"] = sum(self._is_means) / len(self._is_means)
+#             eval_score["InceptionScore_std"]  = sum(self._is_stds)  / len(self._is_stds)
+
+#         return eval_score
+

@@ -1,21 +1,22 @@
 # modified from TA-TITOK
 experiment:
-    project: "titok3D_ll32_vae_UCF_128"
-    name: "titok3D_ll32_vae_UCF_128_run1"
-    output_dir: "titok3D_ll32_vae_UCF_128_run1"
+    project: "titok3D_ll32_vae_UCF_st_128_short"
+    name: "titok3D_ll32_vae_UCF_st_128_short_run1"
+    output_dir: "titok3D_ll32_vae_UCF_st_128_short_run1"
     max_train_examples: 9537
     save_every: 10000
-    eval_every: 10000    
+    eval_every: 10000
     generate_every: 5000
     log_every: 100
     log_grad_norm_every: 500
     resume: True
 
+
 model:
     vq_model:
         quantize_mode: "vae"
-        # model_type: "TiTok3DST"
-        need_discriminator: True        
+        model_type: "TiTok3DST"
+        need_discriminator: True
         token_size: 16
         vit_enc_model_size: "large"
         vit_dec_model_size: "large"
@@ -28,7 +29,7 @@ model:
         is_legacy: false
 
 losses:
-    discriminator_start: 125_000
+    discriminator_start: 30_000
     quantizer_weight: 1.0
     discriminator_factor: 1.0
     discriminator_weight: 0.1
@@ -67,18 +68,18 @@ dataset:
 optimizer:
     name: adamw 
     params:
-        learning_rate: 1e-4
-        discriminator_learning_rate: 1e-4
+        learning_rate: 1e-5
+        discriminator_learning_rate: 1e-5
         beta1: 0.9
         beta2: 0.999
-        weight_decay: 1e-4
+        weight_decay: 1e-5
 
 lr_scheduler:
     scheduler: "cosine"
     params:
         learning_rate: ${optimizer.params.learning_rate}
-        warmup_steps: 3841
-        end_lr: 1e-5
+        warmup_steps: 1_000
+        end_lr: 1e-6
 
 training:
     gradient_accumulation_steps: 1
@@ -88,7 +89,7 @@ training:
     enable_wandb: True
     use_ema: True
     seed: 42
-    max_train_steps: 381_480
+    max_train_steps: 100_000
     num_generated_videos: 1
     max_grad_norm: 1.0
-    epoch: 40
+    epoch: 10    

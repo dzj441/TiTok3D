@@ -1,11 +1,11 @@
 # modified from TA-TITOK
 experiment:
-    project: "titok3D_ll32_vae_toyUCF100VID_32_400k"
-    name: "titok3D_ll32_vae_toyUCF100VID_32_400k_run1"
-    output_dir: "titok3D_ll32_vae_toyUCF100VID_32_400k_run1"
+    project: "titok3D_debug"
+    name: "titok3D_ll32_debug_run1"
+    output_dir: "titok3D_debug_run1"
     max_train_examples: 685_800_000
-    save_every: 10000
-    eval_every: 20000
+    save_every: 10
+    eval_every: 10
     generate_every: 5000
     log_every: 50
     log_grad_norm_every: 1_00

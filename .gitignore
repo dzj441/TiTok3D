@@ -188,3 +188,4 @@ aaa_*/
 *.tar.gz
 past_experiments/
 slurm_output/
+archive/
