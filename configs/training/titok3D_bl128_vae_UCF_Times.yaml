@@ -1,8 +1,8 @@
 # modified from TA-TITOK
 experiment:
-    project: "titok3D_ll32_vae_UCF_st_128_short"
-    name: "titok3D_ll32_vae_UCF_st_128_short_run1"
-    output_dir: "titok3D_ll32_vae_UCF_st_128_short_run1"
+    project: "titok3D_bl128_vae_UCF_Times"
+    name: "titok3D_bl128_vae_UCF_Times_run1"
+    output_dir: "titok3D_bl128_vae_UCF_Times_run1"
     max_train_examples: 9537
     save_every: 10000
     eval_every: 10000
@@ -35,7 +35,7 @@ model:
         load_spatial: true
         load_common: true   
         freeze_spatial: true
-    pretrained_path: "tokenizer_titok_bl128_vae_c16_imagenet\\model.safetensors" 
+    pretrained_path: "tokenizer_titok_bl128_vae_c16_imagenet/model.safetensors" 
     load_latent: true
 
 losses:
@@ -60,7 +60,7 @@ eval:
 dataset:
     params:
         train_path: "datasets/UCF-101/train"
-        eval_path: "datasets/UCF-101/test101"
+        eval_path: "datasets/UCF-101/test-101"
         train_list: "datasets/UCF-101/trainlist01.txt"
         eval_list: "datasets/UCF-101/testlist-101.txt"        
         fps: 16 

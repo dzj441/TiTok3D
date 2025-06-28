@@ -15,10 +15,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-import os
-import sys  
-sys.path.append(os.getcwd())
-
 import torch
 import torch.nn as nn
 from einops import rearrange
@@ -466,6 +462,8 @@ class TiTok3DST(TiTok3D):
                 state = dict(load_safetensors(pretrained_path))
             else:
                 state = torch.load(pretrained_path, map_location="cpu")
+            if "latent_tokens" in state and config.model.load_latent:
+                self.latent_tokens.data.copy_( state["latent_tokens"] )
             
             self.encoder.load_pretrained(state=state,
                                         load_common=config.model.encoder.load_common,
