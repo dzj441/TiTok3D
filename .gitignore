@@ -189,3 +189,4 @@ aaa_*/
 past_experiments/
 slurm_output/
 archive/
+tokenizer*

@@ -171,6 +171,7 @@ def main():
                             train_dataloader, eval_dataloader,
                             evaluator,
                             global_step,
+                            model_type=model_type,
                             pretrained_tokenizer=pretrained_tokenizer)
         # Stop training if max steps is reached.
         if global_step >= config.training.max_train_steps:

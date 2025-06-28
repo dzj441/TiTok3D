@@ -33,7 +33,7 @@ from utils.lr_schedulers import get_scheduler
 from modeling.modules import EMAModel, ReconstructionLoss_Stage1, ReconstructionLoss_Stage2, ReconstructionLoss_Single_Stage,ReconstructionLoss_FSQ
 from modeling.titok import TiTok, PretrainedTokenizer
 # from modeling.tatitok import TATiTok
-from modeling.titok import TiTok3D,TiTok3D_FSQ,TiTok3DSpatialTemporal
+from modeling.titok import TiTok3D,TiTok3D_FSQ,TiTok3DST
 from modeling.maskgit import ImageBert, UViTBert
 from evaluator.evaluator import VideoEvaluator
 from demo_util import get_titok_tokenizer, sample_fn
@@ -112,7 +112,7 @@ def create_model_and_loss_module(config, logger, accelerator,
         model_cls = TiTok3D_FSQ
         loss_cls =  ReconstructionLoss_FSQ
     elif model_type == "TiTok3DST":
-        model_cls = TiTok3DSpatialTemporal
+        model_cls = TiTok3DST
         loss_cls = ReconstructionLoss_Single_Stage
     else:
         raise ValueError(f"Unsupported model_type {model_type}")
