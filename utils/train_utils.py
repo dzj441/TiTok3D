@@ -1080,7 +1080,7 @@ def eval_reconstruction(
 
 @torch.no_grad()
 def reconstruct_videos(
-    model: nn.Module,
+    model,
     original_videos: torch.Tensor,
     accelerator,
     global_step: int,

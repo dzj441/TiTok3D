@@ -8,7 +8,7 @@ experiment:
     eval_every: 10_0000    
     generate_every: 1_0000
     log_every: 1000
-    log_grad_norm_every: 500
+    log_grad_norm_every: 5000
     resume: True
 
 model:
@@ -29,11 +29,11 @@ model:
     encoder:
         load_spatial: true
         load_common: true 
-        freeze_spatial: true
+        freeze_spatial: false
     decoder:
         load_spatial: true
         load_common: true   
-        freeze_spatial: true
+        freeze_spatial: false
     pretrained_path: "tokenizer_titok_bl128_vae_c16_imagenet/model.safetensors" 
     load_latent: true
 
