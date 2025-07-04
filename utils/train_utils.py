@@ -379,18 +379,6 @@ def train_one_epoch(config, logger, accelerator,
             videos = batch["video"].to(
                 accelerator.device, memory_format=torch.contiguous_format, non_blocking=True
             )
-        # if "text" in batch and model_type == "tatitok":
-        #     text = batch["text"]
-        #     with torch.no_grad():
-        #         text_guidance = clip_tokenizer(text).to(accelerator.device)
-        #         cast_dtype = clip_encoder.transformer.get_cast_dtype()
-        #         text_guidance = clip_encoder.token_embedding(text_guidance).to(cast_dtype)  # [batch_size, n_ctx, d_model]
-        #         text_guidance = text_guidance + clip_encoder.positional_embedding.to(cast_dtype)
-        #         text_guidance = text_guidance.permute(1, 0, 2)  # NLD -> LND
-        #         text_guidance = clip_encoder.transformer(text_guidance, attn_mask=clip_encoder.attn_mask)
-        #         text_guidance = text_guidance.permute(1, 0, 2)  # LND -> NLD
-        #         text_guidance = clip_encoder.ln_final(text_guidance)  # [batch_size, n_ctx, transformer.width]
-
 
         data_time_meter.update(time.time() - end)
 
@@ -565,6 +553,26 @@ def train_one_epoch(config, logger, accelerator,
                     global_step + 1,
                     config.experiment.output_dir,
                     logger=logger,
+                    split = "train",
+                    config=config,
+                    model_type=model_type,
+                    text_guidance= None,
+                    pretrained_tokenizer=None
+                )
+
+                eval_batch = next(iter(eval_dataloader))
+                eval_videos = eval_batch["video"].to(
+                    accelerator.device, memory_format=torch.contiguous_format, non_blocking=True
+                )
+
+                reconstruct_videos(
+                    model,
+                    eval_videos[:config.training.num_generated_videos],
+                    accelerator,
+                    global_step + 1,
+                    config.experiment.output_dir,
+                    logger=logger,
+                    split = "eval",
                     config=config,
                     model_type=model_type,
                     text_guidance= None,
@@ -624,9 +632,8 @@ def train_one_epoch(config, logger, accelerator,
                     logger.info(pprint.pformat(eval_scores))
                     if accelerator.is_main_process:
                         eval_log = {f'eval/'+k: v for k, v in eval_scores.items()}
-                        accelerator.log(eval_log, step=global_step + 1)
-                    
-                # accelerator.wait_for_everyone()
+                        accelerator.log(eval_log, step=global_step + 1)        
+            accelerator.wait_for_everyone()
 
 
             global_step += 1
@@ -1071,57 +1078,75 @@ def eval_reconstruction(
 #         path = os.path.join(root, filename)
 #         img.save(path)
 
-#     model.train()
-
 @torch.no_grad()
-def reconstruct_videos(model, original_videos, accelerator, 
-                    global_step, output_dir, logger, config=None,
-                    model_type="titok3D", text_guidance=None, 
-                    pretrained_tokenizer=None):
-    logger.info("Reconstructing videos...")
-    original_videos = torch.clone(original_videos)
+def reconstruct_videos(
+    model: nn.Module,
+    original_videos: torch.Tensor,
+    accelerator,
+    global_step: int,
+    output_dir: str,
+    logger,
+    split: str = "train",
+    save_prefix = None,
+    config=None,
+    model_type: str = "titok3D",
+    text_guidance=None,
+    pretrained_tokenizer=None,
+):
+    """
+    split: train or eval
+    prefix uses save_prefix, if save_prefix is None,it automatically uses "{global_step}_{split}_{i}"。
+    """
+    logger.info(f"[{split}] Reconstructing videos (step={global_step})...")
+
+    # 1) clone 
+    orig_vids = original_videos.clone()
+
+    # 2) forward encode/decode
     model.eval()
-    dtype = torch.float32
-    if accelerator.mixed_precision == "fp16":
-        dtype = torch.float16
-    elif accelerator.mixed_precision == "bf16":
-        dtype = torch.bfloat16
+    dtype = {
+        "fp16": torch.float16,
+        "bf16": torch.bfloat16
+    }.get(accelerator.mixed_precision, torch.float32)
 
-    with torch.autocast("cuda", dtype=dtype, enabled=accelerator.mixed_precision != "no"):
-        enc_tokens, encoder_dict = accelerator.unwrap_model(model).encode(original_videos)
-    
-    if model_type in ["titok3D","TiTok3DST"]:
+    with torch.autocast("cuda", dtype=dtype,
+                        enabled=accelerator.mixed_precision != "no"):
+        enc_tokens, encoder_dict = accelerator.unwrap_model(model).encode(orig_vids)
+
+    if model_type in ["titok3D", "TiTok3DST"]:
         reconstructed_videos = accelerator.unwrap_model(model).decode(enc_tokens)
-    # elif model_type == "tatitok":
-    #     reconstructed_images = accelerator.unwrap_model(model).decode(enc_tokens, text_guidance)
+    else:
+        raise ValueError(f"Unknown model_type={model_type}")
 
-    # we don't do video visualization here. We only save them to pathes
-    
-    # if pretrained_tokenizer is not None:
-    #     reconstructed_images = pretrained_tokenizer.decode(reconstructed_images.argmax(1))
-    # images_for_saving, images_for_logging = make_viz_from_samples(
-    #     original_images,
-    #     reconstructed_images
-    # )
-    # Log images.
-    # if config.training.enable_wandb:
-    #     accelerator.get_tracker("wandb").log_images(
-    #         {f"Train Reconstruction": images_for_saving},
-    #         step=global_step
-    #     )
-    # else:
-    #     accelerator.get_tracker("tensorboard").log_images(
-    #         {"Train Reconstruction": images_for_logging}, step=global_step
-    #     )
-    # Log locally.
-    
-    root = Path(output_dir) / "train_vids"
-    os.makedirs(root, exist_ok=True)
-    mp4root = root / "mp4"
-    aviroot = root / "avi"
-    
-    for i,vid in enumerate(reconstructed_videos):
-        save_video_imageio(vid,aviroot,mp4root,prefix=str(global_step)+"video_")
+    # 3) output subdir
+    root       = Path(output_dir) / f"{split}_vids"
+    recon_mp4  = root / "recon_mp4"
+    recon_avi  = root / "recon_avi"
+    orig_mp4   = root / "orig_mp4"
+    orig_avi   = root / "orig_avi"
+
+    # 4) save
+    for i, (orig, recon) in enumerate(zip(orig_vids, reconstructed_videos)):
+        if save_prefix:
+            prefix_base = f"{save_prefix}_{i}"
+        else:
+            prefix_base = f"{global_step:06d}_{split}_{i}"
+
+        # 原始
+        save_video_imageio(
+            orig,
+            avi_dir=orig_avi,
+            mp4_dir=orig_mp4,
+            prefix=prefix_base + "_orig_"
+        )
+        # 重建
+        save_video_imageio(
+            recon,
+            avi_dir=recon_avi,
+            mp4_dir=recon_mp4,
+            prefix=prefix_base + "_recon_"
+        )
+
     model.train()
 
 

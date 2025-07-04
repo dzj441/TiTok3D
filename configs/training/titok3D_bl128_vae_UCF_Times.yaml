@@ -31,10 +31,12 @@ model:
         load_spatial: true
         load_common: true 
         freeze_spatial: true
+        attention_pattern: "s4"
     decoder:
         load_spatial: true
         load_common: true   
         freeze_spatial: true
+        attention_pattern: "s4"
     pretrained_path: "tokenizer_titok_bl128_vae_c16_imagenet/model.safetensors" 
     load_latent: true
 

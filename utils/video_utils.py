@@ -229,8 +229,8 @@ def save_video_imageio(
     Returns:
         None
     """
-    if avi_dir:
-        os.makedirs(avi_dir, exist_ok=True)
+    # if avi_dir:
+    #     os.makedirs(avi_dir, exist_ok=True)
     os.makedirs(mp4_dir, exist_ok=True)
 
     # 反标准化
