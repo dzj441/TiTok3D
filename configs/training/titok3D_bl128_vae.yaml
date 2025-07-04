@@ -1,8 +1,8 @@
 # modified from TA-TITOK
 experiment:
-    project: "titok3D_bl128_vae_UCF_128"
-    name: "titok3D_bl128_vae_UCF_128_run1"
-    output_dir: "titok3D_bl128_vae_UCF_128_run1"
+    project: "titok3D_bl128_vae_UCF"
+    name: "titok3D_bl128_vae_UCF_run1"
+    output_dir: "titok3D_bl128_vae_UCF_run1"
     max_train_examples: 9537
     save_every: 10_0000
     eval_every: 10_0000    
@@ -15,7 +15,7 @@ model:
     vq_model:
         quantize_mode: "vae"
         model_type: "TiTok3D"
-        need_discriminator: True        
+        need_discriminator: True
         token_size: 16
         vit_enc_model_size: "base"
         vit_dec_model_size: "large"
@@ -26,6 +26,16 @@ model:
         num_latent_tokens: 128
         finetune_decoder: false
         is_legacy: false
+    encoder:
+        load_spatial: true
+        load_common: true 
+        freeze_spatial: true
+    decoder:
+        load_spatial: true
+        load_common: true   
+        freeze_spatial: true
+    pretrained_path: "tokenizer_titok_bl128_vae_c16_imagenet/model.safetensors" 
+    load_latent: true
 
 losses:
     discriminator_start: 300_0000
@@ -49,7 +59,7 @@ eval:
 dataset:
     params:
         train_path: "datasets/UCF-101/train"
-        eval_path: "datasets/UCF-101/test101"
+        eval_path: "datasets/UCF-101/test-101"
         train_list: "datasets/UCF-101/trainlist01.txt"
         eval_list: "datasets/UCF-101/testlist-101.txt"        
         fps: 16 

@@ -35,45 +35,6 @@ def modulate(x, shift, scale):
     return x * (1 + scale) + shift
 
 
-class ResidualAttentionBlock(nn.Module):
-    def __init__(
-            self,
-            d_model,
-            n_head,
-            mlp_ratio = 4.0,
-            act_layer = nn.GELU,
-            norm_layer = nn.LayerNorm
-        ):
-        super().__init__()
-
-        self.ln_1 = norm_layer(d_model)
-        self.attn = nn.MultiheadAttention(d_model, n_head) # 1024 , 16
-        self.mlp_ratio = mlp_ratio
-        # optionally we can disable the FFN
-        if mlp_ratio > 0:
-            self.ln_2 = norm_layer(d_model)
-            mlp_width = int(d_model * mlp_ratio)
-            self.mlp = nn.Sequential(OrderedDict([
-                ("c_fc", nn.Linear(d_model, mlp_width)),
-                ("gelu", act_layer()),
-                ("c_proj", nn.Linear(mlp_width, d_model))
-            ]))
-
-    def attention(
-            self,
-            x: torch.Tensor
-    ):
-        return self.attn(x, x, x, need_weights=False)[0]
-
-    def forward(
-            self,
-            x: torch.Tensor,
-    ):
-        attn_output = self.attention(x=self.ln_1(x))
-        x = x + attn_output
-        if self.mlp_ratio > 0:
-            x = x + self.mlp(self.ln_2(x))
-        return x
 
 class BaseResidualAttnBlock(nn.Module):
     def __init__(
@@ -141,8 +102,63 @@ class BaseResidualAttnBlock(nn.Module):
     def _attention_forward(self, x, T, H, W):
         raise NotImplementedError
 
+class ResidualAttentionBlock(BaseResidualAttnBlock):
+    """
+    modified ResidualAttentionBlock by inheriting from BaseAttn
+    """
+    def __init__(
+        self,
+        d_model: int,
+        n_head: int,
+        mlp_ratio: float = 4.0,
+        drop_path: float = 0.0,
+        act_layer=nn.GELU,
+        norm_layer=nn.LayerNorm,
+        trainable: bool = True
+    ):
+        super().__init__(
+            d_model=d_model,
+            n_head=n_head,
+            mlp_ratio=mlp_ratio,
+            drop_path=drop_path,
+            act_layer=act_layer,
+            norm_layer=norm_layer,
+            trainable=trainable
+        )
 
-class ResidualSpatialAttnBlock(BaseResidualAttnBlock):
+    def _attention_forward(self, x: torch.Tensor, *args) -> torch.Tensor:
+        """
+        x: [N, B, C]
+        返回 attention 产生的残差 [N, B, C]
+        """
+        # 1. LayerNorm
+        x_norm = self.ln1(x)   # [N, B, C]
+
+        # 2. 原生 MultiheadAttention 接受 (seq_len, batch, embed)
+        attn_out = self.attn(
+            x_norm,   # q
+            x_norm,   # k
+            x_norm,   # v
+            need_weights=False
+        )[0]         # [N, B, C]
+
+        return attn_out
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        x: [N, B, C]
+        """
+        # 1) attention + 残差
+        res = self._attention_forward(x)
+        x = x + self.drop_path(res)
+
+        # 2) 可选的 MLP + 残差
+        if self.mlp_ratio > 0:
+            x = x + self.drop_path(self.mlp(self.ln2(x)))
+
+        return x
+
+class Residual(BaseResidualAttnBlock):
     """
     Spatial Attention:为每帧 HW tokens 做 attention,
     cls/reg tokens repeat→attention→mean 回聚。
@@ -654,7 +670,29 @@ class TiTok3DEncoder(BaseTiTok3DEncoder):
         for blk in self.transformer:
             x = blk(x)
         return x
+    
+    def load_pretrained(self,state,
+                 load_common: bool = False,
+                 load_attn: bool = False):
 
+            if load_common:
+                self._load_encoder_common_weights(state, prefix="encoder.")
+                print("common weights have been loaded in TiTok3DEncoder")
+
+            if load_attn:
+                idx = 0
+                for blk in self.transformer:
+                    if isinstance(blk, ResidualAttentionBlock):
+                        prefix = f"encoder.transformer.{idx}"
+                        blk.load_weights(state, prefix)
+                        idx += 1
+                print(f"Titok3DEncoder has loaded spatial attention parameters ,totally {idx} attn blocks!")
+    
+    def freeze_attn(self):
+        for blk in self.transformer:
+            if isinstance(blk, ResidualAttentionBlock):
+                blk.set_trainable(False)
+        print("Titok3DEncoder's spatial attention is frozen:!")
 
 class TiTok3DSTEncoder(BaseTiTok3DEncoder):
 
@@ -662,9 +700,9 @@ class TiTok3DSTEncoder(BaseTiTok3DEncoder):
         super().__init__(config)
         model_size = config.model.vq_model.vit_enc_model_size
         self.pattern_map = {
-            "small": "t1s4" * 2,   # T1S4 + T1S4 -> 10 层
-            "base":  "t1s4" * 3,   # T1S4 ×3 -> 15 层
-            "large": "t1s4" * 6,   # T1S4 ×6 -> 30 层
+            "small": config.model.encoder.attention_pattern * 2,   # T1S4 + T1S4 -> 10 层
+            "base":  config.model.encoder.attention_pattern * 3,   # T1S4 ×3 -> 15 层
+            "large": config.model.encoder.attention_pattern * 6,   # T1S4 ×6 -> 30 层
         }
         if model_size not in self.pattern_map:
             raise ValueError(f"No default pattern for model_size='{model_size}'")
@@ -674,7 +712,7 @@ class TiTok3DSTEncoder(BaseTiTok3DEncoder):
         
         self._build_transformer()
 
-        self.num_spatial_blocks  = sum(isinstance(b, ResidualSpatialAttnBlock) for b in self.transformer)
+        self.num_spatial_blocks  = sum(isinstance(b, Residual) for b in self.transformer)
         self.num_temporal_blocks = sum(isinstance(b, ResidualTemporalAttnBlock) for b in self.transformer)
     
     def load_pretrained(self,state,
@@ -689,7 +727,7 @@ class TiTok3DSTEncoder(BaseTiTok3DEncoder):
             if load_spatial_attn:
                 spatial_idx = 0
                 for blk in self.transformer:
-                    if isinstance(blk, ResidualSpatialAttnBlock):
+                    if isinstance(blk, Residual):
                         prefix = f"encoder.transformer.{spatial_idx}"
                         blk.load_weights(state, prefix)
                         spatial_idx += 1
@@ -700,7 +738,7 @@ class TiTok3DSTEncoder(BaseTiTok3DEncoder):
     
     def freeze_spatial(self):
         for blk in self.transformer:
-            if isinstance(blk, ResidualSpatialAttnBlock):
+            if isinstance(blk, Residual):
                 blk.set_trainable(False)
         print("Titok3DSTEncoder's spatial attention is frozen:!")
 
@@ -718,7 +756,7 @@ class TiTok3DSTEncoder(BaseTiTok3DEncoder):
         blocks = []
         for typ in sequence:
             if typ == 's':
-                blk = ResidualSpatialAttnBlock(
+                blk = Residual(
                     d_model=self.width,
                     n_head=self.num_heads,
                     mlp_ratio=4.0,
@@ -927,6 +965,30 @@ class TiTok3DDecoder(BaseTiTok3DDecoder):
         for blk in self.transformer:
             x = blk(x)
         return x
+
+    def load_pretrained(self,state,
+                 load_common: bool = False,
+                 load_attn: bool = False):
+
+            if load_common:
+                self._load_decoder_common_weights(state, prefix="decoder.")
+                print("common weights have been loaded in TiTok3DDecoder")
+
+            if load_attn:
+                idx = 0
+                for blk in self.transformer:
+                    if isinstance(blk, ResidualAttentionBlock):
+                        prefix = f"decoder.transformer.{idx}"
+                        blk.load_weights(state, prefix)
+                        idx += 1
+
+                print(f"Titok3DDecoder has loaded spatial attention parameters ,totally {idx} attn blocks!")
+    
+    def freeze_attn(self):
+        for blk in self.transformer:
+            if isinstance(blk, ResidualAttentionBlock):
+                blk.set_trainable(False)
+        print("Titok3Decoder's spatial attention is frozen:!")
     
 
 class TiTok3DSTDecoder(BaseTiTok3DDecoder):
@@ -937,9 +999,9 @@ class TiTok3DSTDecoder(BaseTiTok3DDecoder):
     def __init__(self,config):
         # 1) 选择 pattern，计算 num_layers
         self.pattern_map = {
-            "small": "t1s4" * 2,   # T1S4 + T1S4 -> 10 layers
-            "base":  "t1s4" * 3,   # T1S4 ×3 -> 15 layers
-            "large": "t1s4" * 6,   # T1S4 ×6 -> 30 layers
+            "small": config.model.decoder.attention_pattern * 2,   # T1S4 + T1S4 -> 10 layers
+            "base":  config.model.decoder.attention_pattern * 3,   # T1S4 ×3 -> 15 layers
+            "large": config.model.decoder.attention_pattern * 6,   # T1S4 ×6 -> 30 layers
         }
         model_size = config.model.vq_model.vit_dec_model_size
         if model_size not in self.pattern_map:
@@ -955,7 +1017,7 @@ class TiTok3DSTDecoder(BaseTiTok3DDecoder):
         # 3) build tfs
         self._build_transformer()
 
-        self.num_spatial_blocks  = sum(isinstance(b, ResidualSpatialAttnBlock) for b in self.transformer)
+        self.num_spatial_blocks  = sum(isinstance(b, Residual) for b in self.transformer)
         self.num_temporal_blocks = sum(isinstance(b, ResidualTemporalAttnBlock) for b in self.transformer)
 
     def load_pretrained(self,state,
@@ -968,7 +1030,7 @@ class TiTok3DSTDecoder(BaseTiTok3DDecoder):
             if load_spatial_attn:
                 spatial_idx = 0
                 for blk in self.transformer:
-                    if isinstance(blk, ResidualSpatialAttnBlock):
+                    if isinstance(blk, Residual):
                         prefix = f"decoder.transformer.{spatial_idx}"
                         blk.load_weights(state, prefix)
                         spatial_idx += 1
@@ -981,7 +1043,7 @@ class TiTok3DSTDecoder(BaseTiTok3DDecoder):
 
     def freeze_spatial(self):
         for blk in self.transformer:
-            if isinstance(blk, ResidualSpatialAttnBlock): # spatial attention can be frozen
+            if isinstance(blk, Residual): # spatial attention can be frozen
                 blk.set_trainable(False)
         print(" Titok3DSTDecoder's spatial attention is frozen:! ")
 
@@ -998,7 +1060,7 @@ class TiTok3DSTDecoder(BaseTiTok3DDecoder):
         for typ in seq:
             if typ == 's':
                 blocks.append(
-                    ResidualSpatialAttnBlock(
+                    Residual(
                         d_model=self.width,
                         n_head=self.num_heads,
                         mlp_ratio=4.0,

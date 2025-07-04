@@ -1,8 +1,8 @@
 # modified from TA-TITOK
 experiment:
-    project: "titok3D_bl128_vae_UCF_Times"
-    name: "titok3D_bl128_vae_UCF_Times_run1"
-    output_dir: "titok3D_bl128_vae_UCF_Times_run1"
+    project: "titok3DST_bl128_vae_UCF_Times"
+    name: "titok3DST_bl128_vae_UCF_Times_run1"
+    output_dir: "titok3DST_bl128_vae_UCF_Times_run1"
     max_train_examples: 9537
     save_every: 10000
     eval_every: 10000

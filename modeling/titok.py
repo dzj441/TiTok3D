@@ -311,7 +311,7 @@ class TiTok3D_FSQ(BaseModel,PyTorchModelHubMixin):
         return decoded, result_dict
 
 
-class TiTok3D(BaseModel,PyTorchModelHubMixin):
+class BaseTiTok3D(BaseModel,PyTorchModelHubMixin):
     def __init__(self, config):
 
         if isinstance(config, dict):
@@ -443,8 +443,42 @@ class TiTok3D(BaseModel,PyTorchModelHubMixin):
         z_quantized, result_dict = self.encode(x)
         decoded = self.decode(z_quantized)
         return decoded, result_dict
-    
-class TiTok3DST(TiTok3D):
+
+class TiTok3D(BaseTiTok3D):
+    """
+    时空一体化版本，复用 TiTok3D 的大部分逻辑，
+    """
+    def __init__(self, config):
+        # 先让父类完成大部分初始化
+        super().__init__(config)
+
+        self.encoder =  TiTok3DEncoder(config)
+        self.decoder = TiTok3DDecoder(config)
+
+        self.apply(self._init_weights)
+        pretrained_path = config.model.get("pretrained_path",None)
+        if pretrained_path:
+            if pretrained_path.endswith(".safetensors"):
+                state = dict(load_safetensors(pretrained_path))
+            else:
+                state = torch.load(pretrained_path, map_location="cpu")
+            if "latent_tokens" in state and config.model.load_latent:
+                self.latent_tokens.data.copy_( state["latent_tokens"] )
+            
+            self.encoder.load_pretrained(state=state,
+                                        load_common=config.model.encoder.load_common,
+                                        load_attn=config.model.encoder.load_spatial)
+            
+            self.decoder.load_pretrained(state=state,
+                                        load_common=config.model.decoder.load_common,
+                                        load_attn=config.model.decoder.load_spatial)
+            if config.model.encoder.freeze_spatial:
+                self.encoder.freeze_attn()
+            if config.model.decoder.freeze_spatial:
+                self.decoder.freeze_attn()
+        
+
+class TiTok3DST(BaseTiTok3D):
     """
     时空一体化版本，复用 TiTok3D 的大部分逻辑，只替换 encoder/decoder
     """
