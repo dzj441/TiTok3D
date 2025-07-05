@@ -158,7 +158,7 @@ class ResidualAttentionBlock(BaseResidualAttnBlock):
 
         return x
 
-class Residual(BaseResidualAttnBlock):
+class ResidualSpatialAttnBlock(BaseResidualAttnBlock):
     """
     Spatial Attention:为每帧 HW tokens 做 attention,
     cls/reg tokens repeat→attention→mean 回聚。
@@ -195,7 +195,6 @@ class Residual(BaseResidualAttnBlock):
         regs_rec = rearrange(regs_o, "r (b t) c -> r b t c", b=B, t=T).mean(2)
         return torch.cat([cls_rec, toks_rec, regs_rec], dim=0)
 
-
 class ResidualTemporalAttnBlock(BaseResidualAttnBlock):
     """
     Temporal Attention:为每个空间位置跨 T 帧做 attention,
@@ -226,6 +225,47 @@ class ResidualTemporalAttnBlock(BaseResidualAttnBlock):
 
         return torch.cat([zero_cls, toks_rec, zero_regs], dim=0)
 
+
+class ResidualCausalTemporalAttnBlock(BaseResidualAttnBlock):
+    """
+    Causal Temporal Attention：
+    """
+    def _attention_forward(self, x, T, H, W):
+        B, C = x.shape[1], x.shape[2]
+        cls  = x[0:1]                          # [1, B, C]
+        toks = x[1:1+H*W*T]                   # [T*H*W, B, C]
+        regs = x[1+H*W*T:]                    # [N_reg, B, C]
+
+        # reshape 到 [T, B*H*W, C]
+        toks_t = rearrange(toks, "(t h w) b c -> t (b h w) c",
+                           b=B, h=H, w=W, t=T)
+        # 归一化
+        ln1_tok_t = self.ln1(toks_t)
+
+        # 构造 causal attn_mask: shape [T, T], True 表示要屏蔽的位置
+        # 上三角(不含主对角线)为 True，即 j>i 时被 mask
+        causal_mask = torch.triu(torch.ones(T, T, device=x.device), diagonal=1).bool()
+
+        # 带 mask 的 attention
+        # 返回值是 tuple: (out, attn_weights)，这里只要 out
+        out_t, _ = self.attn(
+            ln1_tok_t,            # query:  [T, BHW, C]
+            ln1_tok_t,            # key:    [T, BHW, C]
+            ln1_tok_t,            # value:  [T, BHW, C]
+            attn_mask=causal_mask,
+            need_weights=False
+        )
+
+        # fold 回原维度 [(T*H*W), B, C]
+        toks_rec = rearrange(out_t, "t (b h w) c -> (t h w) b c",
+                             b=B, h=H, w=W, t=T)
+
+        # cls/reg 位置不做 residual（全零）
+        zero_cls  = torch.zeros_like(cls)
+        zero_regs = torch.zeros_like(regs)
+
+        # 拼回去： [1 + T*H*W + N_reg, B, C]
+        return torch.cat([zero_cls, toks_rec, zero_regs], dim=0)
 
 if hasattr(torch.nn.functional, 'scaled_dot_product_attention'):
     ATTENTION_MODE = 'flash'
@@ -712,7 +752,7 @@ class TiTok3DSTEncoder(BaseTiTok3DEncoder):
         
         self._build_transformer()
 
-        self.num_spatial_blocks  = sum(isinstance(b, Residual) for b in self.transformer)
+        self.num_spatial_blocks  = sum(isinstance(b, ResidualSpatialAttnBlock) for b in self.transformer)
         self.num_temporal_blocks = sum(isinstance(b, ResidualTemporalAttnBlock) for b in self.transformer)
     
     def load_pretrained(self,state,
@@ -727,7 +767,7 @@ class TiTok3DSTEncoder(BaseTiTok3DEncoder):
             if load_spatial_attn:
                 spatial_idx = 0
                 for blk in self.transformer:
-                    if isinstance(blk, Residual):
+                    if isinstance(blk, ResidualSpatialAttnBlock):
                         prefix = f"encoder.transformer.{spatial_idx}"
                         blk.load_weights(state, prefix)
                         spatial_idx += 1
@@ -738,7 +778,7 @@ class TiTok3DSTEncoder(BaseTiTok3DEncoder):
     
     def freeze_spatial(self):
         for blk in self.transformer:
-            if isinstance(blk, Residual):
+            if isinstance(blk, ResidualSpatialAttnBlock):
                 blk.set_trainable(False)
         print("Titok3DSTEncoder's spatial attention is frozen:!")
 
@@ -756,7 +796,7 @@ class TiTok3DSTEncoder(BaseTiTok3DEncoder):
         blocks = []
         for typ in sequence:
             if typ == 's':
-                blk = Residual(
+                blk = ResidualSpatialAttnBlock(
                     d_model=self.width,
                     n_head=self.num_heads,
                     mlp_ratio=4.0,
@@ -1017,7 +1057,7 @@ class TiTok3DSTDecoder(BaseTiTok3DDecoder):
         # 3) build tfs
         self._build_transformer()
 
-        self.num_spatial_blocks  = sum(isinstance(b, Residual) for b in self.transformer)
+        self.num_spatial_blocks  = sum(isinstance(b, ResidualSpatialAttnBlock) for b in self.transformer)
         self.num_temporal_blocks = sum(isinstance(b, ResidualTemporalAttnBlock) for b in self.transformer)
 
     def load_pretrained(self,state,
@@ -1030,7 +1070,7 @@ class TiTok3DSTDecoder(BaseTiTok3DDecoder):
             if load_spatial_attn:
                 spatial_idx = 0
                 for blk in self.transformer:
-                    if isinstance(blk, Residual):
+                    if isinstance(blk, ResidualSpatialAttnBlock):
                         prefix = f"decoder.transformer.{spatial_idx}"
                         blk.load_weights(state, prefix)
                         spatial_idx += 1
@@ -1043,7 +1083,7 @@ class TiTok3DSTDecoder(BaseTiTok3DDecoder):
 
     def freeze_spatial(self):
         for blk in self.transformer:
-            if isinstance(blk, Residual): # spatial attention can be frozen
+            if isinstance(blk, ResidualSpatialAttnBlock): # spatial attention can be frozen
                 blk.set_trainable(False)
         print(" Titok3DSTDecoder's spatial attention is frozen:! ")
 
@@ -1060,7 +1100,7 @@ class TiTok3DSTDecoder(BaseTiTok3DDecoder):
         for typ in seq:
             if typ == 's':
                 blocks.append(
-                    Residual(
+                    ResidualSpatialAttnBlock(
                         d_model=self.width,
                         n_head=self.num_heads,
                         mlp_ratio=4.0,
