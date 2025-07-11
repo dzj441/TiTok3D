@@ -211,7 +211,7 @@ def save_video_imageio(
     avi_dir,
     mp4_dir,
     fps=16,
-    mean=[0.5, 0.5, 0.5],
+    mean=[0.0, 0.0, 0.0],
     std=[1.0, 1.0, 1.0],
     prefix="video"
 ):
@@ -292,7 +292,7 @@ def load_and_preprocess_video(
     frames = torch.from_numpy(frames).float().permute(0, 3, 1, 2)  # [T, 3, H, W]
 
     # 标准化
-    norm = VideoNorm()  # 默认 mean=[0.5]*3, std=[1.0]*3
+    norm = VideoNorm(mean=[0.0,0.0,0.0])  # 默认 mean=[0.5]*3, std=[1.0]*3
     video = norm(frames)  # 仍是 [3, T, H, W]
     video = video.permute(1, 0, 2, 3)  # -> [3, T, H, W]
 

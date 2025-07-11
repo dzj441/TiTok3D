@@ -14,7 +14,7 @@ experiment:
 model:
     vq_model:
         quantize_mode: "vq"
-        model_type: "titok3DFSQ"
+        model_type: "TiTok3DFSQ"
         need_discriminator: True
         token_size: 5
         vit_enc_model_size: "large"

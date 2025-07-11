@@ -114,3 +114,96 @@ class PerceptualLoss(torch.nn.Module):
         # weighted avg.
         loss = loss / num_losses
         return loss
+
+from torch import nn
+from pytorchvideo.models.hub import i3d_r50
+from torchvision.models.feature_extraction import create_feature_extractor
+
+class PerceptualLoss3D(nn.Module):
+    """
+    3D 感知损失，基于 I3D 中间层时空特征。
+    输入和目标均为 shape (B, C, T, H, W)，像素归一化至 [0,1]。
+    """
+
+    def __init__(
+        self,
+        return_nodes: dict = None,
+        layer_weights: dict = None,
+        resize_shape: tuple = (224, 224),
+    ):
+        """
+        Args:
+            return_nodes: 指定 I3D 要挂载的中间层，形如
+                          {"blocks.0": "stem", "blocks.2": "mid", "blocks.4": "deep"}
+            layer_weights: 各层的加权系数，key 与 return_nodes 的 value 对齐
+            resize_shape: 空间插值到 (H, W)，I3D 预训练时为 224×224
+        """
+        super().__init__()
+
+        # 默认要提取的中间层
+        if return_nodes is None:
+            return_nodes = {
+                "blocks.0": "stem_feat",
+                "blocks.2": "mid_feat",
+                "blocks.4": "deep_feat",
+            }
+        # 默认各层权重
+        if layer_weights is None:
+            layer_weights = {
+                "stem_feat": 0.5,
+                "mid_feat": 1.0,
+                "deep_feat": 1.5,
+            }
+
+        self.return_nodes = return_nodes
+        self.layer_weights = layer_weights
+        self.resize_shape = resize_shape  # (H, W)
+
+        # 加载并冻结 I3D R50
+        model3d = i3d_r50(pretrained=True).eval()
+        for p in model3d.parameters():
+            p.requires_grad = False
+
+        # 挂载中间层特征提取器
+        self.feat_extractor = create_feature_extractor(
+            model3d, return_nodes=self.return_nodes
+        )
+
+    def forward(self, input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            input, target: Tensor, shape (B, C, T, H, W), values in [0,1]
+        Returns:
+            标量 Tensor：加权后的 3D perceptual loss
+        """
+        # 1) 空间 resize 到模型要求的 resolution
+        B, C, T, H, W = input.shape
+        flat_in  = input.reshape(B * T, C, H, W)
+        flat_tg  = target.reshape(B * T, C, H, W)
+        flat_in  = F.interpolate(
+            flat_in, size=self.resize_shape,
+            mode="bilinear", align_corners=False, antialias=True
+        )
+        flat_tg  = F.interpolate(
+            flat_tg, size=self.resize_shape,
+            mode="bilinear", align_corners=False, antialias=True
+        )
+        Hn, Wn = self.resize_shape
+        vid_in  = flat_in.reshape(B, T, C, Hn, Wn).permute(0, 2, 1, 3, 4)
+        vid_tg  = flat_tg.reshape(B, T, C, Hn, Wn).permute(0, 2, 1, 3, 4)
+
+        # 2) 提取时空特征
+        feats_in = self.feat_extractor(vid_in)
+        feats_tg = self.feat_extractor(vid_tg)
+
+        # 3) 加权 MSE 叠加
+        loss = 0.0
+        total_w = 0.0
+        for name, feat_in in feats_in.items():
+            feat_tgt = feats_tg[name]
+            w = self.layer_weights.get(name, 1.0)
+            loss += w * F.mse_loss(feat_in, feat_tgt, reduction="mean")
+            total_w += w
+
+        # 4) 归一化
+        return loss / total_w

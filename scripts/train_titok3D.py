@@ -158,8 +158,6 @@ def main():
         config, logger, accelerator, ema_model, num_update_steps_per_epoch,
         strict=True)
     logger.info(f"global_step:{global_step} ,first_epoch: {first_epoch}")
-    if config.training.get("epoch",0) != 0:
-        num_train_epochs =  config.training.get("epoch")
     logger.info(f"global_step:{global_step} ,first_epoch: {first_epoch},num_train_epochs:{num_train_epochs}")
     first_epoch = math.ceil(first_epoch/accelerator.num_processes)
     for current_epoch in range(first_epoch, num_train_epochs):

@@ -27,6 +27,7 @@ import torch
 class SchedulerType(Enum):
     COSINE = "cosine"
     CONSTANT = "constant"
+    COSINE_WITH_CONSTANT = "cosine_with_constant"    
 
 def get_cosine_schedule_with_warmup(
     optimizer: torch.optim.Optimizer,
@@ -96,9 +97,50 @@ def get_constant_schedule_with_warmup(
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
+def get_cosine_with_constant_schedule_with_warmup(
+    optimizer: torch.optim.Optimizer,
+    num_warmup_steps: int,
+    num_training_steps: int,
+    constant_steps: int = 0,
+    num_cycles: float = 0.5,
+    last_epoch: int = -1,
+    base_lr: float = 1e-4,
+    end_lr: float = 0.0,
+):
+    """
+    Creates a warm-up → cosine decay → constant-end_lr schedule.
+
+    Args:
+        optimizer: the optimizer to apply schedule to.
+        num_warmup_steps: steps of linear warm-up from 0 → base_lr.
+        num_training_steps: total number of training steps including constant phase.
+        constant_steps: number of final steps to keep lr == end_lr.
+        num_cycles: number of cosine cycles (default half-cycle decay).
+        last_epoch: for resuming.
+        base_lr: starting lr after warm-up.
+        end_lr: lr at the bottom of cosine, and constant thereafter.
+    """
+    def lr_lambda(current_step):
+        if current_step < num_warmup_steps:
+            return float(current_step) / float(max(1, num_warmup_steps))
+        # cosine decay until (total − constant_steps)
+        decay_end = num_training_steps - constant_steps
+        if current_step < decay_end:
+            progress = float(current_step - num_warmup_steps) / \
+                       float(max(1, decay_end - num_warmup_steps))
+            cos_ratio = 0.5 * (1.0 + math.cos(math.pi * 2.0 * num_cycles * progress))
+            return (end_lr + (base_lr - end_lr) * cos_ratio) / base_lr
+        # constant phase
+        return end_lr / base_lr
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda, last_epoch)
+
+
+
 TYPE_TO_SCHEDULER_FUNCTION = {
     SchedulerType.COSINE: get_cosine_schedule_with_warmup,
     SchedulerType.CONSTANT: get_constant_schedule_with_warmup,
+    SchedulerType.COSINE_WITH_CONSTANT: get_cosine_with_constant_schedule_with_warmup,
 }
 
 def get_scheduler(
@@ -108,6 +150,7 @@ def get_scheduler(
     num_training_steps: Optional[int] = None,
     base_lr: float = 1e-4,
     end_lr: float = 0.0,
+    constant_steps: int = 0,                    # 新增参数
 ):
     """Retrieves a learning rate scheduler from the given name and optimizer.
 
@@ -118,6 +161,7 @@ def get_scheduler(
         num_training_steps: An integer, the total number of training steps.
         base_lr: A float, the base learning rate.
         end_lr: A float, the final learning rate.
+        constant_steps: a constant small lr refining
 
     Returns:
         A instance of torch.optim.lr_scheduler.LambdaLR
@@ -128,16 +172,24 @@ def get_scheduler(
     name = SchedulerType(name)
     schedule_func = TYPE_TO_SCHEDULER_FUNCTION[name]
 
-    if num_warmup_steps is None:
-        raise ValueError(f"{name} requires `num_warmup_steps`, please provide that argument.")
+    if num_warmup_steps is None or num_training_steps is None:
+        raise ValueError(f"{name} requires both warmup and total steps.")
 
-    if num_training_steps is None:
-        raise ValueError(f"{name} requires `num_training_steps`, please provide that argument.")
-
-    return schedule_func(
-        optimizer,
-        num_warmup_steps=num_warmup_steps,
-        num_training_steps=num_training_steps,
-        base_lr=base_lr,
-        end_lr=end_lr,
-    )
+    # 对于 COSINE_WITH_CONSTANT 要传 constant_steps
+    if name is SchedulerType.COSINE_WITH_CONSTANT:
+        return schedule_func(
+            optimizer,
+            num_warmup_steps=num_warmup_steps,
+            num_training_steps=num_training_steps,
+            constant_steps=constant_steps,
+            base_lr=base_lr,
+            end_lr=end_lr,
+        )
+    else:
+        return schedule_func(
+            optimizer,
+            num_warmup_steps=num_warmup_steps,
+            num_training_steps=num_training_steps,
+            base_lr=base_lr,
+            end_lr=end_lr,
+        )

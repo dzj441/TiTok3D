@@ -20,8 +20,8 @@ nvidia-smi
 echo "start training"
 
 WANDB_MODE=online accelerate launch --num_machines=1 --num_processes=1 --machine_rank=0 scripts/train_titok3D.py config=configs/training/titok3D_bl128_vae.yaml \
-    experiment.project="titok3D_bl128_vae_UCF_100k" \
-    experiment.name="titok3D_bl128_vae_UCF_load_100k_1e-4" \
-    experiment.output_dir="/root/autodl-tmp/titok3D_bl128_UCF_load_100k_1e-4" \
+    experiment.project="titok3D_bl128_vae_UCF" \
+    experiment.name="titok3D_bl128_vae_UCF_2500k_3Dpp_tuneconst500k \
+    experiment.output_dir="titok3D_bl128_vae_UCF_2500k_3Dpp_tuneconst500k" \
 
 

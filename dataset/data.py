@@ -165,7 +165,7 @@ class DecordVideoDataset(data.Dataset):
         self.label_to_class = {i: c for i, c in enumerate(self.classes)}
 
         self.video_random_cropper = VideoRandomSquareCrop(resolution)
-        self.norm = VideoNorm()
+        self.norm = VideoNorm(mean=[0.0,0.0,0.0])
         self.resizecrop = resizecrop
         
 

@@ -27,7 +27,7 @@ from torch.cuda.amp import autocast
 
 from modeling.diffusion import create_diffusion
 from modeling.modules.blocks import SimpleMLPAdaLN
-from .perceptual_loss import PerceptualLoss
+from .perceptual_loss import PerceptualLoss,PerceptualLoss3D
 from .discriminator import NLayerDiscriminator,NLayerDiscriminator3D
 
 
@@ -124,8 +124,13 @@ class ReconstructionLoss_Stage2(torch.nn.Module):
         self.reconstruction_loss = loss_config.reconstruction_loss
         self.reconstruction_weight = loss_config.reconstruction_weight
         self.quantizer_weight = loss_config.quantizer_weight
-        self.perceptual_loss = PerceptualLoss(
-            loss_config.perceptual_loss).eval()
+        self.perceptual_type = loss_config.get("perceptual_type","2D")
+        if self.perceptual_type == "3D":
+            self.perceptual_loss = PerceptualLoss3D().eval()
+        else:
+            self.perceptual_loss = PerceptualLoss(
+                loss_config.perceptual_loss).eval()
+
         self.perceptual_weight = loss_config.perceptual_weight
         self.discriminator_iter_start = loss_config.discriminator_start
 
@@ -179,14 +184,17 @@ class ReconstructionLoss_Stage2(torch.nn.Module):
         reconstruction_loss *= self.reconstruction_weight
 
         perceptual_loss = torch.zeros((), device=inputs.device)
-        if inputs.dim() == 5:
-            # for video
-            imaged_inputs = rearrange(inputs,'b c t h w ->(b t) c h w')
-            imaged_reconstructions = rearrange(reconstructions,'b c t h w ->(b t) c h w')
-            perceptual_loss = self.perceptual_loss(imaged_inputs,imaged_reconstructions).mean()
-        else:
-            # Compute perceptual loss.
-            perceptual_loss = self.perceptual_loss(inputs, reconstructions).mean()
+        if self.perceptual_type == "3D":
+                perceptual_loss = self.perceptual_loss(inputs, reconstructions)
+        else: # IMAGE fashion calculation
+            if inputs.dim() == 5:
+                # for video
+                imaged_inputs = rearrange(inputs,'b c t h w ->(b t) c h w')
+                imaged_reconstructions = rearrange(reconstructions,'b c t h w ->(b t) c h w')
+                perceptual_loss = self.perceptual_loss(imaged_inputs,imaged_reconstructions).mean()
+            else:
+                # Compute perceptual loss.
+                perceptual_loss = self.perceptual_loss(inputs, reconstructions).mean()
 
         # Compute discriminator loss.
         generator_loss = torch.zeros((), device=inputs.device)
@@ -302,15 +310,17 @@ class ReconstructionLoss_Single_Stage(ReconstructionLoss_Stage2):
 
         # Compute perceptual loss.
         perceptual_loss = torch.zeros((), device=inputs.device)
-
-        if inputs.dim() == 5:
-            # for video
-            imaged_inputs = rearrange(inputs,'b c t h w ->(b t) c h w')
-            imaged_reconstructions = rearrange(reconstructions,'b c t h w ->(b t) c h w')
-            perceptual_loss = self.perceptual_loss(imaged_inputs,imaged_reconstructions).mean()
-        else:
-            # Compute perceptual loss.
-            perceptual_loss = self.perceptual_loss(inputs, reconstructions).mean()
+        if self.perceptual_type == "3D":
+                perceptual_loss = self.perceptual_loss(inputs, reconstructions)
+        else: # IMAGE fashion calculation
+            if inputs.dim() == 5:
+                # for video
+                imaged_inputs = rearrange(inputs,'b c t h w ->(b t) c h w')
+                imaged_reconstructions = rearrange(reconstructions,'b c t h w ->(b t) c h w')
+                perceptual_loss = self.perceptual_loss(imaged_inputs,imaged_reconstructions).mean()
+            else:
+                # Compute perceptual loss.
+                perceptual_loss = self.perceptual_loss(inputs, reconstructions).mean()
 
         # Compute discriminator loss.
         generator_loss = torch.zeros((), device=inputs.device)
@@ -390,8 +400,12 @@ class ReconstructionLoss_FSQ(torch.nn.Module):
         self.reconstruction_loss = loss_config.reconstruction_loss
         self.reconstruction_weight = loss_config.reconstruction_weight
         self.quantizer_weight = loss_config.quantizer_weight
-        self.perceptual_loss = PerceptualLoss(
-            loss_config.perceptual_loss).eval()
+        self.perceptual_type = loss_config.get("perceptual_type","2D")
+        if self.perceptual_type == "3D":
+            self.perceptual_loss = PerceptualLoss3D().eval()
+        else:
+            self.perceptual_loss = PerceptualLoss(
+                loss_config.perceptual_loss).eval()
         self.perceptual_weight = loss_config.perceptual_weight
         self.discriminator_iter_start = loss_config.discriminator_start
 
@@ -445,14 +459,17 @@ class ReconstructionLoss_FSQ(torch.nn.Module):
         reconstruction_loss *= self.reconstruction_weight
 
         perceptual_loss = torch.zeros((), device=inputs.device)
-        if inputs.dim() == 5:
-            # for video
-            imaged_inputs = rearrange(inputs,'b c t h w ->(b t) c h w')
-            imaged_reconstructions = rearrange(reconstructions,'b c t h w ->(b t) c h w')
-            perceptual_loss = self.perceptual_loss(imaged_inputs,imaged_reconstructions).mean()
-        else:
-            # Compute perceptual loss.
-            perceptual_loss = self.perceptual_loss(inputs, reconstructions).mean()
+        if self.perceptual_type == "3D":
+                perceptual_loss = self.perceptual_loss(inputs, reconstructions)
+        else: # IMAGE fashion calculation
+            if inputs.dim() == 5:
+                # for video
+                imaged_inputs = rearrange(inputs,'b c t h w ->(b t) c h w')
+                imaged_reconstructions = rearrange(reconstructions,'b c t h w ->(b t) c h w')
+                perceptual_loss = self.perceptual_loss(imaged_inputs,imaged_reconstructions).mean()
+            else:
+                # Compute perceptual loss.
+                perceptual_loss = self.perceptual_loss(inputs, reconstructions).mean()
 
         # Compute discriminator loss.
         generator_loss = torch.zeros((), device=inputs.device)

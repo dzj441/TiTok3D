@@ -266,6 +266,68 @@ class ResidualCausalTemporalAttnBlock(BaseResidualAttnBlock):
 
         # 拼回去： [1 + T*H*W + N_reg, B, C]
         return torch.cat([zero_cls, toks_rec, zero_regs], dim=0)
+    
+class ResidualTemporalCrossAttnBlock(BaseResidualAttnBlock):
+    def __init__(
+        self,
+        d_model: int,
+        n_head: int,
+        mlp_ratio: float = 4.0,
+        drop_path: float = 0.0,
+        act_layer=nn.GELU,
+        norm_layer=nn.LayerNorm,
+        trainable: bool = True,
+        causal: bool = True,
+    ):
+        super().__init__(                           # 1. 调用父类构造，初始化：
+            d_model, n_head, mlp_ratio, drop_path,
+            act_layer, norm_layer, trainable
+        )                                           #    - self.ln1, self.attn, self.ln2/self.mlp, self.drop_path
+        # —— 专用于“帧级”时序注意力的 LayerNorm
+        self.frame_norm = norm_layer(d_model)       # 2. 对时序 token 做归一化
+        # —— 专用于 regs（寄存器 token）的 LayerNorm
+        self.reg_norm   = norm_layer(d_model)       # 3. 对 regs 做归一化
+        # —— regs 的 Cross-Attention，用来让 regs attend 到帧特征
+        self.reg_attn   = nn.MultiheadAttention(d_model, n_head)
+        # —— 是否在 self.attn（帧级自注意力）中使用因果 mask
+        self.causal     = causal
+
+
+    def _attention_forward(self, x, T, H, W):
+        B, C = x.size(1), x.size(2)
+        cls  = x[0:1]
+        toks = x[1:1+H*W*T]
+        regs = x[1+H*W*T:]
+
+        # —— 1) 帧注意力（和你原来的一样，只不过保留 out_t）
+        toks_t = rearrange(toks, '(t h w) b c -> t (b h w) c',
+                           b=B, h=H, w=W, t=T)
+        seq_t  = self.frame_norm(toks_t)     # [T, B·H·W, C]
+
+        if self.causal:
+            mask = torch.triu(torch.full((T,T), float("-inf"), device=seq_t.device), 1)
+            out_t = self.attn(seq_t, seq_t, seq_t, attn_mask=mask, need_weights=False)[0]
+        else:
+            out_t = self.attn(seq_t, seq_t, seq_t, need_weights=False)[0]
+
+        toks_rec = rearrange(out_t, 't (b h w) c -> (t h w) b c',
+                             b=B, h=H, w=W, t=T)
+
+        # —— 2) 生成每帧 summary，batch size 恢复到 B
+        frame_summary = out_t.view(T, B, H*W, C).mean(dim=2)  # [T, B, C]
+
+        # —— 3) regs cross-attention（batch size = B）
+        regs_q  = self.reg_norm(regs)                        # [R, B, C]
+        regs_out = self.reg_attn(
+            regs_q, frame_summary, frame_summary,
+            need_weights=False
+        )[0]  # [R, B, C]
+
+        # —— 4) cls 在 temporal 阶段不更新
+        zero_cls = torch.zeros_like(cls)
+
+        # —— 最后把三个部分拼回去
+        return torch.cat([zero_cls, toks_rec, regs_out], dim=0)
 
 if hasattr(torch.nn.functional, 'scaled_dot_product_attention'):
     ATTENTION_MODE = 'flash'
@@ -747,13 +809,15 @@ class TiTok3DSTEncoder(BaseTiTok3DEncoder):
         if model_size not in self.pattern_map:
             raise ValueError(f"No default pattern for model_size='{model_size}'")
         self.block_pattern = self.pattern_map[model_size]
-        counts = re.findall(r'[st](\d+)', self.block_pattern)
+        counts = re.findall(r'[stcC](\d+)', self.block_pattern)
         self.num_layers = sum(int(cnt) for cnt in counts) # update numlayers
         
         self._build_transformer()
 
         self.num_spatial_blocks  = sum(isinstance(b, ResidualSpatialAttnBlock) for b in self.transformer)
-        self.num_temporal_blocks = sum(isinstance(b, ResidualTemporalAttnBlock) for b in self.transformer)
+        self.num_temporal_blocks = sum(isinstance(b, ResidualTemporalAttnBlock) or 
+                                       isinstance(b, ResidualCausalTemporalAttnBlock) or 
+                                        isinstance(b, ResidualTemporalCrossAttnBlock) for b in self.transformer)
     
     def load_pretrained(self,state,
                  load_common: bool = False,
@@ -786,7 +850,7 @@ class TiTok3DSTEncoder(BaseTiTok3DEncoder):
         '''
         build tfs based on given patterns
         '''
-        parts = re.findall(r'([st])(\d+)', self.block_pattern)
+        parts = re.findall(r'([stcC])(\d+)', self.block_pattern)
         sequence = []
         for typ, cnt in parts:
             sequence += [typ] * int(cnt)
@@ -805,7 +869,7 @@ class TiTok3DSTEncoder(BaseTiTok3DEncoder):
                     norm_layer=nn.LayerNorm,
                     trainable=True,
                 )
-            else:  # 't'
+            elif typ == 't':  # 't'
                 blk = ResidualTemporalAttnBlock(
                     d_model=self.width,
                     n_head=self.num_heads,
@@ -815,6 +879,26 @@ class TiTok3DSTEncoder(BaseTiTok3DEncoder):
                     norm_layer=nn.LayerNorm,
                     trainable=True,
                 )
+            elif typ == 'c':
+                blk = ResidualCausalTemporalAttnBlock(
+                    d_model=self.width,
+                    n_head=self.num_heads,
+                    mlp_ratio=4.0,
+                    drop_path=0.0,
+                    act_layer=nn.GELU,
+                    norm_layer=nn.LayerNorm,
+                    trainable=True,
+                )
+            elif typ == 'C':
+                blk = ResidualTemporalCrossAttnBlock(
+                    d_model=self.width,
+                    n_head=self.num_heads,
+                    mlp_ratio=4.0,
+                    drop_path=0.0,
+                    act_layer=nn.GELU,
+                    norm_layer=nn.LayerNorm,
+                    trainable=True,
+                )                                
             blocks.append(blk)
 
         self.transformer = nn.ModuleList(blocks)
@@ -1051,14 +1135,17 @@ class TiTok3DSTDecoder(BaseTiTok3DDecoder):
 
         # 2) init from base  
         super().__init__(config)
-        counts = re.findall(r'[st](\d+)', self.block_pattern)
+        counts = re.findall(r'[stcC](\d+)', self.block_pattern)
         self.num_layers = sum(int(c) for c in counts)
 
         # 3) build tfs
         self._build_transformer()
 
         self.num_spatial_blocks  = sum(isinstance(b, ResidualSpatialAttnBlock) for b in self.transformer)
-        self.num_temporal_blocks = sum(isinstance(b, ResidualTemporalAttnBlock) for b in self.transformer)
+        self.num_temporal_blocks = sum(isinstance(b, ResidualTemporalAttnBlock) or 
+                                       isinstance(b, ResidualCausalTemporalAttnBlock) or 
+                                        isinstance(b, ResidualTemporalCrossAttnBlock) for b in self.transformer)
+    
 
     def load_pretrained(self,state,
                  load_common: bool = False,
@@ -1089,7 +1176,7 @@ class TiTok3DSTDecoder(BaseTiTok3DDecoder):
 
     def _build_transformer(self):
         # Expand pattern like "s4t1s4t1" → ['s','s','s','s','t', ...]
-        parts = re.findall(r'([st])(\d+)', self.block_pattern)
+        parts = re.findall(r'([stcC])(\d+)', self.block_pattern)
         seq = []
         for typ, cnt in parts:
             seq += [typ] * int(cnt)
@@ -1110,7 +1197,7 @@ class TiTok3DSTDecoder(BaseTiTok3DDecoder):
                         trainable=True
                     )
                 )
-            else:  # 't'
+            elif typ == 't':  # 't'
                 blocks.append(
                     ResidualTemporalAttnBlock(
                         d_model=self.width,
@@ -1122,6 +1209,30 @@ class TiTok3DSTDecoder(BaseTiTok3DDecoder):
                         trainable=True
                     )
                 )
+            elif typ == 'c':
+                blocks.append(
+                    ResidualCausalTemporalAttnBlock(
+                        d_model=self.width,
+                        n_head=self.num_heads,
+                        mlp_ratio=4.0,
+                        drop_path=0.0,
+                        act_layer=nn.GELU,
+                        norm_layer=nn.LayerNorm,
+                        trainable=True,
+                    )
+                )
+            elif typ == 'C':
+                blocks.append(
+                    ResidualTemporalCrossAttnBlock(
+                        d_model=self.width,
+                        n_head=self.num_heads,
+                        mlp_ratio=4.0,
+                        drop_path=0.0,
+                        act_layer=nn.GELU,
+                        norm_layer=nn.LayerNorm,
+                        trainable=True,
+                    )
+                )                    
         self.transformer = nn.ModuleList(blocks)
 
     def _apply_transformer(self, x: torch.Tensor) -> torch.Tensor:

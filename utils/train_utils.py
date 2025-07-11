@@ -99,16 +99,16 @@ def create_clip_model():
 
 
 def create_model_and_loss_module(config, logger, accelerator,
-                                 model_type="titok3D",show_summary = False):
+                                 model_type="TiTok3D",show_summary = False):
     """Creates TiTok model and loss module."""
     logger.info("Creating model and loss module.")
     if model_type == "titok":
         model_cls = TiTok
         loss_cls = ReconstructionLoss_Stage2 if config.model.vq_model.finetune_decoder else ReconstructionLoss_Stage1
-    elif model_type == "titok3D":
+    elif model_type == "TiTok3D":
         model_cls = TiTok3D
         loss_cls = ReconstructionLoss_Single_Stage 
-    elif model_type == "titok3DFSQ":
+    elif model_type == "TiTok3DFSQ":
         model_cls = TiTok3D_FSQ
         loss_cls =  ReconstructionLoss_FSQ
     elif model_type == "TiTok3DST":
@@ -164,7 +164,7 @@ def create_model_and_loss_module(config, logger, accelerator,
                 model_summary_str = summary(model, input_size=input_size, depth=5,
                 col_names=("input_size", "output_size", "num_params", "params_percent", "kernel_size", "mult_adds"))
                 logger.info(model_summary_str)
-        elif model_type in ["titok3D","titok3DFSQ","TiTok3DST"]:
+        elif model_type in ["TiTok3D","TiTok3DFSQ","TiTok3DST"]:
             input_video_size  = (1, 3,config.dataset.preprocessing.temporal_size ,config.dataset.preprocessing.spatial_size, config.dataset.preprocessing.spatial_size)
             input_size = input_video_size
             if show_summary:
@@ -178,7 +178,7 @@ def create_model_and_loss_module(config, logger, accelerator,
 
 
 def create_optimizer(config, logger, model, loss_module,
-                     model_type="titok3D", need_discrminator=True):
+                     model_type="TiTok3D", need_discrminator=True):
     """Creates optimizer for TiTok and discrminator."""
     logger.info("Creating optimizers.")
     optimizer_config = config.optimizer.params
@@ -206,7 +206,7 @@ def create_optimizer(config, logger, model, loss_module,
         betas=(optimizer_config.beta1, optimizer_config.beta2)
     )
 
-    if (config.model.vq_model.finetune_decoder or model_type in ["titok3D","TiTok3DST"]) and need_discrminator:
+    if (config.model.vq_model.finetune_decoder or model_type in ["TiTok3D","TiTok3DST"]) and need_discrminator:
         discriminator_learning_rate = optimizer_config.discriminator_learning_rate
         discriminator_named_parameters = list(loss_module.named_parameters())
         discriminator_gain_or_bias_params = [p for n, p in discriminator_named_parameters if exclude(n, p) and p.requires_grad]
@@ -226,25 +226,41 @@ def create_optimizer(config, logger, model, loss_module,
     return optimizer, discriminator_optimizer
 
 
-def create_lr_scheduler(config, logger, accelerator, optimizer, discriminator_optimizer=None):
-    """Creates learning rate scheduler for TiTok and discrminator."""
+def create_lr_scheduler(
+    config, logger, accelerator,
+    optimizer, discriminator_optimizer=None
+):
+    """Creates learning rate scheduler for TiTok and discriminator, with an extra constant tail phase."""
     logger.info("Creating lr_schedulers.")
+
+    # 基础参数
+    total_steps = config.training.max_train_steps * accelerator.num_processes
+    warmup_steps = config.lr_scheduler.params.warmup_steps * accelerator.num_processes
+    base_lr = config.lr_scheduler.params.learning_rate
+    end_lr = config.lr_scheduler.params.end_lr
+    # constant phase 
+    constant_steps = getattr(config.lr_scheduler.params, "constant_steps", 0) * accelerator.num_processes
+
     lr_scheduler = get_scheduler(
         config.lr_scheduler.scheduler,
         optimizer=optimizer,
-        num_training_steps=config.training.max_train_steps * accelerator.num_processes,
-        num_warmup_steps=config.lr_scheduler.params.warmup_steps * accelerator.num_processes,
-        base_lr=config.lr_scheduler.params.learning_rate,
-        end_lr=config.lr_scheduler.params.end_lr,
+        num_training_steps=total_steps,
+        num_warmup_steps=warmup_steps,
+        base_lr=base_lr,
+        end_lr=end_lr,
+        constant_steps=constant_steps 
     )
     if discriminator_optimizer is not None:
+        disc_total = total_steps - config.losses.discriminator_start
+        disc_warmup = warmup_steps
         discriminator_lr_scheduler = get_scheduler(
             config.lr_scheduler.scheduler,
             optimizer=discriminator_optimizer,
-            num_training_steps=config.training.max_train_steps * accelerator.num_processes - config.losses.discriminator_start,
-            num_warmup_steps=config.lr_scheduler.params.warmup_steps * accelerator.num_processes,
-            base_lr=config.lr_scheduler.params.learning_rate,
-            end_lr=config.lr_scheduler.params.end_lr,
+            num_training_steps=disc_total,
+            num_warmup_steps=disc_warmup,
+            base_lr=base_lr,
+            end_lr=end_lr,
+            constant_steps=constant_steps  
         )
     else:
         discriminator_lr_scheduler = None
@@ -306,7 +322,7 @@ def create_dataloader(config, logger, accelerator):
 def create_evaluator(config, logger, accelerator):
     """Creates evaluator."""
     logger.info("Creating evaluator.")
-    if config.model.vq_model.get("quantize_mode", "vq") == "vae" or config.model.vq_model.get("model_type","titok3D") == "titok3DFSQ":
+    if config.model.vq_model.get("quantize_mode", "vq") == "vae" or config.model.vq_model.get("model_type","TiTok3D") == "TiTok3DFSQ":
         evaluator = VideoEvaluator(
             device=accelerator.device,
             enable_fvd=True,
@@ -360,7 +376,7 @@ def train_one_epoch(config, logger, accelerator,
                     train_dataloader, eval_dataloader,
                     evaluator,
                     global_step,
-                    model_type="titok3D",
+                    model_type="TiTok3D",
                     clip_tokenizer=None,
                     clip_encoder=None,
                     pretrained_tokenizer=None):
@@ -391,7 +407,7 @@ def train_one_epoch(config, logger, accelerator,
 
         with accelerator.accumulate([model, loss_module]):
             loss_module.to(accelerator.device)
-            if model_type in ["titok3D","TiTok3DST"]:
+            if model_type in ["TiTok3D","TiTok3DST"]:
                 reconstructed_videos, extra_results_dict = model(videos)
                 if proxy_codes is None:
                     autoencoder_loss, loss_dict = loss_module(
@@ -451,7 +467,7 @@ def train_one_epoch(config, logger, accelerator,
 
         # Train discriminator.
         discriminator_logs = defaultdict(float)
-        if (config.model.vq_model.finetune_decoder or model_type in ["titok3DFSQ","titok3D","TiTok3DST"]) and accelerator.unwrap_model(loss_module).should_discriminator_be_trained(global_step):
+        if (config.model.vq_model.finetune_decoder or model_type in ["TiTok3DFSQ","TiTok3D","TiTok3DST"]) and accelerator.unwrap_model(loss_module).should_discriminator_be_trained(global_step):
             with accelerator.accumulate(loss_module):
                 discriminator_logs = defaultdict(float)
                 discriminator_loss, loss_dict_discriminator = loss_module(
@@ -981,7 +997,7 @@ def eval_reconstruction(
     eval_loader,
     accelerator,
     evaluator,
-    model_type="titok3D",
+    model_type="TiTok3D",
     clip_tokenizer=None,
     clip_encoder=None,
     pretrained_tokenizer=None
@@ -1008,7 +1024,7 @@ def eval_reconstruction(
         #     text_guidance = clip_encoder.ln_final(text_guidance)  # [batch_size, n_ctx, transformer.width]
 
         original_videos = torch.clone(videos)
-        if model_type in ["titok3D","TiTok3DST"]:
+        if model_type in ["TiTok3D","TiTok3DST"]:
             reconstructed_videos, model_dict = local_model(videos)
         # elif model_type == "tatitok":
         #     reconstructed_videos, model_dict = local_model(videos, text_guidance)
@@ -1089,7 +1105,7 @@ def reconstruct_videos(
     split: str = "train",
     save_prefix = None,
     config=None,
-    model_type: str = "titok3D",
+    model_type: str = "TiTok3D",
     text_guidance=None,
     pretrained_tokenizer=None,
 ):
@@ -1113,7 +1129,7 @@ def reconstruct_videos(
                         enabled=accelerator.mixed_precision != "no"):
         enc_tokens, encoder_dict = accelerator.unwrap_model(model).encode(orig_vids)
 
-    if model_type in ["titok3D", "TiTok3DST"]:
+    if model_type in ["TiTok3D", "TiTok3DST"]:
         reconstructed_videos = accelerator.unwrap_model(model).decode(enc_tokens)
     else:
         raise ValueError(f"Unknown model_type={model_type}")
